@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=82"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "imagerect"
+version = "0.1.0"
+description = "Local-first desktop app for metric image rectification against 2D references"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6>=6.6",
+    "opencv-python-headless>=4.10",
+    "numpy>=1.26",
+    "ezdxf>=1.1",
+]
+
+[project.optional-dependencies]
+3d = [
+    "open3d>=0.18",
+    "pye57>=0.4",
+    "trimesh>=4.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.3",
+    "pytest-cov>=6.0",
+    "ruff>=0.9",
+    "mypy>=1.14",
+    "pre-commit>=4.0",
+]
+
+[project.scripts]
+imagerect = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]
+packages = ["core", "ui"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["cv2.*", "ezdxf.*", "pye57.*", "open3d.*", "trimesh.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["ui.*", "core.reference2d"]
+disable_error_code = ["attr-defined"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=core --cov-report=term-missing"

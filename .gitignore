@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+*.spec
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Test data — real project files, not for distribution
+tests/sample_data/*.dwg
+tests/sample_data/*.dxf
+tests/sample_data/*.jpg
+tests/sample_data/*.jpeg
+tests/sample_data/*.png
+tests/sample_data/*.tiff
+tests/sample_data/*.tif
+tests/sample_data/*.e57
+tests/sample_data/*.obj
+tests/sample_data/*.fbx
+tests/sample_data/*.JPG
+tests/sample_data/*.JPEG
+tests/sample_data/*.PNG
+tests/sample_data/*.TIFF
+tests/sample_data/*.TIF
+tests/sample_data/*.E57
+tests/sample_data/*.OBJ
+tests/sample_data/*.FBX
+!tests/sample_data/synthetic_reference.dxf
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Project files (user-specific)
+*.imagerect.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dev task files
+CODEX-TASK-*.md
+
+# Keep the tracked PyInstaller spec
+!imagerect.spec

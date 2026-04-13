@@ -1,0 +1,947 @@
+"""Main window for the ImageRect desktop application."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import cv2
+import numpy as np
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction, QFont, QKeySequence
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMessageBox,
+    QSplitter,
+    QStackedWidget,
+    QStatusBar,
+    QToolBar,
+    QVBoxLayout,
+    QWidget,
+)
+
+from core.export import RectificationExportResult, export_rectified_image
+from core.image import load_image
+from core.project import ControlPoint, ProjectData
+from core.reference2d import Reference2D, load_dxf
+from core.reference3d import (
+    Reference3D,
+    WorkingPlane,
+    define_plane_from_3_points,
+    define_plane_ransac,
+    load_e57,
+    load_obj,
+    pick_nearest_point,
+    project_3d_to_plane,
+    reference_plane_extents,
+    reference_source_points,
+    working_plane_from_dict,
+    working_plane_to_dict,
+)
+from core.transform import HomographyResult, solve_planar_homography
+from ui.export_dialog import ExportDialog
+from ui.image_viewer import ImageViewer
+from ui.point_table import PointTable
+from ui.reference2d_viewer import Reference2DViewer
+from ui.reference3d_viewer import Reference3DViewer
+from ui.theme import (
+    BG_DARK,
+    TEXT_BRIGHT,
+    TEXT_DIM,
+    WARNING,
+    color_for_rms,
+    icon_size,
+    make_symbol_icon,
+)
+
+
+class MainWindow(QMainWindow):
+    """Main application window with 2D and 3D reference workflows."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.project = ProjectData()
+        self.project_path: Path | None = None
+        self.reference_2d: Reference2D | None = None
+        self.reference_3d: Reference3D | None = None
+        self.source_image: np.ndarray | None = None
+        self.transform_result: HomographyResult | None = None
+        self.selected_point_id: int | None = None
+        self.reference_world_points: dict[int, np.ndarray] = {}
+        self.pending_plane_points: list[np.ndarray] = []
+        self.plane_pick_mode = False
+        self._history: list[ProjectData] = [self.project.clone()]
+        self._history_index = 0
+        self._restoring_history = False
+
+        self._build_ui()
+        self._create_actions()
+        self._connect_signals()
+        self._refresh_ui()
+
+    def load_image_file(self, path: str | Path) -> None:
+        image_path = Path(path)
+        self.source_image = load_image(image_path)
+        self.project.image_path = str(image_path)
+        if self.project.name == "Untitled":
+            self.project.name = image_path.stem
+        self._record_history()
+        self._refresh_ui(status=f"Loaded image {image_path.name}")
+
+    def load_reference_file(self, path: str | Path) -> None:
+        reference_path = Path(path)
+        self.reference_2d = load_dxf(reference_path)
+        self.reference_3d = None
+        self.reference_world_points = {}
+        self.project.reference_path = str(reference_path)
+        self.project.reference_type = "dxf"
+        self.project.units = self.reference_2d.units
+        self.project.working_plane = None
+        self.pending_plane_points = []
+        self.plane_pick_mode = False
+        self._record_history()
+        self._refresh_ui(status=f"Loaded reference {reference_path.name}")
+
+    def load_3d_reference_file(self, path: str | Path) -> None:
+        reference_path = Path(path)
+        suffix = reference_path.suffix.lower()
+        if suffix == ".e57":
+            reference = load_e57(reference_path)
+        elif suffix == ".obj":
+            reference = load_obj(reference_path)
+        else:
+            raise ValueError("3D reference must be .e57 or .obj")
+
+        self.reference_3d = reference
+        self.reference_2d = None
+        self.reference_world_points = {}
+        self.pending_plane_points = []
+        self.plane_pick_mode = False
+        self.project.reference_path = str(reference_path)
+        self.project.reference_type = reference.source_type
+        self.project.units = reference.units
+        self.project.working_plane = None
+        self._record_history()
+        self._refresh_ui(status=f"Loaded 3D reference {reference_path.name}")
+
+    def load_project_file(self, path: str | Path) -> None:
+        project_path = Path(path)
+        self.project = ProjectData.load(project_path)
+        self.project_path = project_path
+        self.selected_point_id = None
+        self.reference_world_points = {}
+        self.pending_plane_points = []
+        self.plane_pick_mode = False
+        self._reload_assets_from_project()
+        self._reset_history()
+        self._refresh_ui(status=f"Loaded project {project_path.name}")
+
+    def save_project_file(self, path: str | Path | None = None) -> None:
+        target = Path(path) if path is not None else self.project_path
+        if target is None:
+            file_name, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Project",
+                str(Path.cwd() / f"{self.project.name}.imagerect.json"),
+                "ImageRect Project (*.imagerect.json)",
+            )
+            if not file_name:
+                return
+            target = Path(file_name)
+
+        self.project.save(target)
+        self.project_path = target
+        self._update_window_title()
+        self.statusBar().showMessage(f"Saved project to {target}", 5000)
+
+    def save_project_as(self) -> None:
+        file_name, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Project As",
+            str(Path.cwd() / f"{self.project.name}.imagerect.json"),
+            "ImageRect Project (*.imagerect.json)",
+        )
+        if file_name:
+            self.save_project_file(file_name)
+
+    def run_export(self) -> RectificationExportResult | None:
+        if self.source_image is None:
+            raise ValueError("Load an image before exporting.")
+        if self.transform_result is None or self.project.transform_matrix is None:
+            raise ValueError("At least four valid point pairs are required before export.")
+
+        reference_extents = self._current_reference_extents()
+        dialog = ExportDialog(self.project.export_settings, self)
+        if dialog.exec() == 0:
+            return None
+
+        self.project.export_settings = dialog.get_settings()
+        default_path = Path.cwd() / f"{self.project.name}_rectified"
+        file_name, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Rectified Image",
+            str(default_path),
+            "All Files (*)",
+        )
+        if not file_name:
+            return None
+
+        result = export_rectified_image(
+            source_image=self.source_image,
+            homography_image_to_reference=np.asarray(
+                self.project.transform_matrix, dtype=np.float64
+            ),
+            control_points=self.project.paired_points(),
+            output_path=file_name,
+            pixel_size=self.project.export_settings.pixel_size,
+            units=self.project.units,
+            output_format=self.project.export_settings.output_format,
+            resampling=self.project.export_settings.resampling,
+            clip_to_hull=self.project.export_settings.clip_to_hull,
+            reference_extents=reference_extents,
+            project_name=self.project.name,
+            rms_error=self.project.rms_error,
+            warnings=self.project.warnings,
+        )
+        self.statusBar().showMessage(f"Exported {result.image_path.name}", 5000)
+        QMessageBox.information(
+            self,
+            "Export complete",
+            f"Image: {result.image_path}\nMetadata: {result.metadata_path}",
+        )
+        return result
+
+    def run_synthetic_smoke_test(self, output_root: Path) -> RectificationExportResult:
+        """Exercise the window, solver, and export path with synthetic data."""
+
+        reference_path = (
+            Path(__file__).resolve().parent.parent
+            / "tests"
+            / "sample_data"
+            / "synthetic_reference.dxf"
+        )
+        output_root.mkdir(parents=True, exist_ok=True)
+        source_path = output_root / "synthetic_source.png"
+        plane = np.zeros((301, 401, 3), dtype=np.uint8)
+        plane[:] = (238, 238, 238)
+        cv2.rectangle(plane, (0, 0), (400, 300), (20, 20, 20), 3)
+        cv2.line(plane, (0, 150), (400, 150), (40, 140, 220), 2)
+        cv2.line(plane, (200, 0), (200, 300), (40, 140, 220), 2)
+        cv2.putText(
+            plane,
+            "ImageRect",
+            (85, 165),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.1,
+            (30, 30, 30),
+            2,
+            cv2.LINE_AA,
+        )
+
+        reference_points = np.array(
+            [[0.0, 0.0], [400.0, 0.0], [400.0, 300.0], [0.0, 300.0]],
+            dtype=np.float32,
+        )
+        image_points = np.array(
+            [[120.0, 420.0], [620.0, 360.0], [560.0, 90.0], [170.0, 120.0]],
+            dtype=np.float32,
+        )
+        canvas = np.zeros((520, 760, 3), dtype=np.uint8)
+        homography_ref_to_image = cv2.getPerspectiveTransform(reference_points, image_points)
+        cv2.warpPerspective(
+            plane,
+            homography_ref_to_image,
+            (760, 520),
+            dst=canvas,
+            borderMode=cv2.BORDER_TRANSPARENT,
+        )
+        if not cv2.imwrite(str(source_path), canvas):
+            raise ValueError(f"Unable to write smoke-test source image to {source_path}")
+
+        self.project = ProjectData(name="synthetic_smoke")
+        self.project_path = None
+        self.source_image = None
+        self.reference_2d = None
+        self.reference_3d = None
+        self.transform_result = None
+        self.selected_point_id = None
+        self.reference_world_points = {}
+        self.pending_plane_points = []
+        self.plane_pick_mode = False
+        self._reset_history()
+        self.load_image_file(source_path)
+        self.load_reference_file(reference_path)
+
+        for image_xy, reference_xy in zip(
+            image_points.tolist(), reference_points.tolist(), strict=True
+        ):
+            point = self.project.add_point()
+            point.image_xy = (float(image_xy[0]), float(image_xy[1]))
+            point.reference_xy = (float(reference_xy[0]), float(reference_xy[1]))
+
+        self._record_history()
+        self._recompute_transform()
+        if self.transform_result is None:
+            raise ValueError("Smoke test could not solve a homography.")
+
+        return export_rectified_image(
+            source_image=self.source_image,
+            homography_image_to_reference=self.transform_result.matrix,
+            control_points=self.project.paired_points(),
+            output_path=output_root / "synthetic_rectified",
+            pixel_size=1.0,
+            units=self.project.units,
+            output_format="png",
+            resampling="bilinear",
+            clip_to_hull=False,
+            reference_extents=self._current_reference_extents(),
+            project_name=self.project.name,
+            rms_error=self.project.rms_error,
+            warnings=self.project.warnings,
+        )
+
+    def _build_ui(self) -> None:
+        self.setWindowTitle("ImageRect — Metric Image Rectification")
+        self.setMinimumSize(1200, 800)
+        self.resize(1560, 980)
+
+        self.image_viewer = ImageViewer(self)
+        self.reference_viewer = Reference2DViewer(self)
+        self.reference3d_viewer = Reference3DViewer(self)
+        self.reference_stack = QStackedWidget(self)
+        self.reference_stack.addWidget(self.reference_viewer)
+        self.reference_stack.addWidget(self.reference3d_viewer)
+
+        self.point_table = PointTable(self)
+        self.rms_label = QLabel("RMS: n/a")
+        self.warning_label = QLabel("Warnings: need at least four point pairs")
+        self.workflow_label = QLabel("Workflow: click image point, then matching reference point")
+        self.layer_list = QListWidget(self)
+        self.info_separator = QFrame(self)
+        self.info_separator.setObjectName("infoSeparator")
+        self.info_separator.setFrameShape(QFrame.HLine)
+
+        right_panel = QWidget(self)
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.addWidget(self.reference_stack, stretch=1)
+
+        self.layer_box = QGroupBox("Layers")
+        layer_layout = QVBoxLayout(self.layer_box)
+        layer_layout.setContentsMargins(8, 8, 8, 8)
+        layer_layout.addWidget(self.layer_list)
+        right_layout.addWidget(self.layer_box)
+
+        top_splitter = QSplitter(Qt.Horizontal)
+        top_splitter.addWidget(self.image_viewer)
+        top_splitter.addWidget(right_panel)
+        top_splitter.setStretchFactor(0, 1)
+        top_splitter.setStretchFactor(1, 1)
+
+        table_box = QWidget(self)
+        table_layout = QVBoxLayout(table_box)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        table_layout.setSpacing(8)
+        info_row = QWidget(self)
+        info_layout = QHBoxLayout(info_row)
+        info_layout.setContentsMargins(8, 6, 8, 6)
+        info_layout.addWidget(self.workflow_label, stretch=2)
+        info_layout.addWidget(self.rms_label, stretch=1)
+        info_layout.addWidget(self.warning_label, stretch=2)
+        table_box.setStyleSheet(f"background: {BG_DARK};")
+        self.workflow_label.setStyleSheet(f"color: {TEXT_DIM}; font-style: italic;")
+        self.warning_label.setStyleSheet(f"color: {WARNING};")
+        rms_font = QFont()
+        rms_font.setFamilies(["JetBrains Mono", "SF Mono", "DejaVu Sans Mono", "Monospace"])
+        rms_font.setPixelSize(16)
+        rms_font.setWeight(QFont.DemiBold)
+        self.rms_label.setFont(rms_font)
+        self.rms_label.setStyleSheet(f"color: {TEXT_BRIGHT};")
+        table_layout.addWidget(self.info_separator)
+        table_layout.addWidget(info_row)
+        table_layout.addWidget(self.point_table)
+
+        main_splitter = QSplitter(Qt.Vertical)
+        main_splitter.addWidget(top_splitter)
+        main_splitter.addWidget(table_box)
+        main_splitter.setStretchFactor(0, 5)
+        main_splitter.setStretchFactor(1, 2)
+
+        central = QWidget(self)
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.addWidget(main_splitter)
+        self.setCentralWidget(central)
+        self.setStatusBar(QStatusBar(self))
+
+    def _create_actions(self) -> None:
+        self.action_new = QAction("New", self)
+        self.action_new.setShortcut(QKeySequence.New)
+        self.action_open_project = QAction("Open Project", self)
+        self.action_open_project.setShortcut(QKeySequence.Open)
+        self.action_save_project = QAction("Save Project", self)
+        self.action_save_project.setShortcut(QKeySequence.Save)
+        self.action_save_project_as = QAction("Save Project As", self)
+        self.action_save_project_as.setShortcut(QKeySequence.SaveAs)
+        self.action_load_image = QAction("Load Image", self)
+        self.action_load_image.setShortcut(QKeySequence("Ctrl+I"))
+        self.action_load_reference = QAction("Load DXF", self)
+        self.action_load_reference.setShortcut(QKeySequence("Ctrl+D"))
+        self.action_load_reference3d = QAction("Load 3D Reference", self)
+        self.action_load_reference3d.setShortcut(QKeySequence("Ctrl+Shift+D"))
+        self.action_define_plane_from_points = QAction("Plane From 3 Points", self)
+        self.action_define_plane_auto = QAction("Plane Auto", self)
+        self.action_export = QAction("Export Rectified Image", self)
+        self.action_export.setShortcut(QKeySequence("Ctrl+E"))
+        self.action_delete_point = QAction("Delete Point", self)
+        self.action_delete_point.setShortcut(QKeySequence.Delete)
+        self.action_move_up = QAction("Move Point Up", self)
+        self.action_move_up.setShortcut(QKeySequence("Ctrl+Up"))
+        self.action_move_down = QAction("Move Point Down", self)
+        self.action_move_down.setShortcut(QKeySequence("Ctrl+Down"))
+        self.action_undo = QAction("Undo", self)
+        self.action_undo.setShortcut(QKeySequence.Undo)
+        self.action_redo = QAction("Redo", self)
+        self.action_redo.setShortcut(QKeySequence.Redo)
+
+        self.action_load_image.setIcon(make_symbol_icon("📷"))
+        self.action_load_reference.setIcon(make_symbol_icon("📐"))
+        self.action_load_reference3d.setIcon(make_symbol_icon("📦"))
+        self.action_define_plane_from_points.setIcon(make_symbol_icon("◫"))
+        self.action_define_plane_auto.setIcon(make_symbol_icon("🧭"))
+        self.action_export.setIcon(make_symbol_icon("💾"))
+        self.action_undo.setIcon(make_symbol_icon("↩"))
+        self.action_redo.setIcon(make_symbol_icon("↪"))
+
+        menu_file = self.menuBar().addMenu("File")
+        menu_file.addAction(self.action_new)
+        menu_file.addAction(self.action_open_project)
+        menu_file.addAction(self.action_save_project)
+        menu_file.addAction(self.action_save_project_as)
+        menu_file.addSeparator()
+        menu_file.addAction(self.action_load_image)
+        menu_file.addAction(self.action_load_reference)
+        menu_file.addAction(self.action_load_reference3d)
+        menu_file.addSeparator()
+        menu_file.addAction(self.action_export)
+
+        menu_edit = self.menuBar().addMenu("Edit")
+        menu_edit.addAction(self.action_undo)
+        menu_edit.addAction(self.action_redo)
+        menu_edit.addSeparator()
+        menu_edit.addAction(self.action_delete_point)
+        menu_edit.addAction(self.action_move_up)
+        menu_edit.addAction(self.action_move_down)
+
+        menu_3d = self.menuBar().addMenu("3D")
+        menu_3d.addAction(self.action_define_plane_from_points)
+        menu_3d.addAction(self.action_define_plane_auto)
+
+        toolbar = QToolBar("Main", self)
+        toolbar.setMovable(False)
+        toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        toolbar.setIconSize(icon_size())
+        toolbar.addAction(self.action_load_image)
+        toolbar.addAction(self.action_load_reference)
+        toolbar.addAction(self.action_load_reference3d)
+        toolbar.addSeparator()
+        toolbar.addAction(self.action_define_plane_from_points)
+        toolbar.addAction(self.action_define_plane_auto)
+        toolbar.addSeparator()
+        toolbar.addAction(self.action_export)
+        toolbar.addSeparator()
+        toolbar.addAction(self.action_undo)
+        toolbar.addAction(self.action_redo)
+        self.addToolBar(toolbar)
+
+    def _connect_signals(self) -> None:
+        self.image_viewer.point_picked.connect(self._handle_image_pick)
+        self.reference_viewer.point_picked.connect(self._handle_reference_pick)
+        self.reference3d_viewer.point_picked.connect(self._handle_reference3d_pick)
+        self.image_viewer.cursor_message.connect(self.statusBar().showMessage)
+        self.reference_viewer.cursor_message.connect(self.statusBar().showMessage)
+        self.reference3d_viewer.cursor_message.connect(self.statusBar().showMessage)
+        self.point_table.point_selected.connect(self._set_selected_point)
+        self.point_table.label_changed.connect(self._update_point_label)
+        self.point_table.lock_changed.connect(self._update_point_lock)
+        self.point_table.delete_requested.connect(self._delete_selected_point)
+        self.layer_list.itemChanged.connect(self._layer_item_changed)
+
+        self.action_new.triggered.connect(self._new_project)
+        self.action_open_project.triggered.connect(self._open_project_dialog)
+        self.action_save_project.triggered.connect(lambda checked=False: self.save_project_file())
+        self.action_save_project_as.triggered.connect(self.save_project_as)
+        self.action_load_image.triggered.connect(self._open_image_dialog)
+        self.action_load_reference.triggered.connect(self._open_reference_dialog)
+        self.action_load_reference3d.triggered.connect(self._open_reference3d_dialog)
+        self.action_define_plane_from_points.triggered.connect(self._start_plane_from_3_points)
+        self.action_define_plane_auto.triggered.connect(self._define_plane_auto)
+        self.action_export.triggered.connect(self._run_export_dialog)
+        self.action_delete_point.triggered.connect(self._delete_selected_point)
+        self.action_move_up.triggered.connect(lambda checked=False: self._move_selected_point(-1))
+        self.action_move_down.triggered.connect(lambda checked=False: self._move_selected_point(1))
+        self.action_undo.triggered.connect(self._undo)
+        self.action_redo.triggered.connect(self._redo)
+
+    def _open_image_dialog(self) -> None:
+        file_name, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Image",
+            str(Path.cwd()),
+            "Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.ppm)",
+        )
+        if file_name:
+            self.load_image_file(file_name)
+
+    def _open_reference_dialog(self) -> None:
+        file_name, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load DXF",
+            str(Path.cwd()),
+            "DXF (*.dxf *.dwg)",
+        )
+        if file_name:
+            self.load_reference_file(file_name)
+
+    def _open_reference3d_dialog(self) -> None:
+        file_name, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load 3D Reference",
+            str(Path.cwd()),
+            "3D Reference (*.e57 *.obj)",
+        )
+        if file_name:
+            self.load_3d_reference_file(file_name)
+
+    def _open_project_dialog(self) -> None:
+        file_name, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Project",
+            str(Path.cwd()),
+            "ImageRect Project (*.imagerect.json)",
+        )
+        if file_name:
+            self.load_project_file(file_name)
+
+    def _run_export_dialog(self) -> None:
+        try:
+            self.run_export()
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+
+    def _new_project(self) -> None:
+        self.project = ProjectData()
+        self.project_path = None
+        self.reference_2d = None
+        self.reference_3d = None
+        self.source_image = None
+        self.transform_result = None
+        self.selected_point_id = None
+        self.reference_world_points = {}
+        self.pending_plane_points = []
+        self.plane_pick_mode = False
+        self._reset_history()
+        self._refresh_ui(status="Started a new project")
+
+    def _handle_image_pick(self, x: float, y: float) -> None:
+        point = self._resolve_target_point("image")
+        if point is None:
+            return
+        point.image_xy = (x, y)
+        self._record_history()
+        self._recompute_transform()
+        self._refresh_ui(
+            status=f"Stored image point for {point.label}; pick matching reference point"
+        )
+
+    def _handle_reference_pick(self, x: float, y: float) -> None:
+        point = self._resolve_target_point("reference")
+        if point is None:
+            return
+        point.reference_xy = (x, y)
+        self._record_history()
+        self._recompute_transform()
+        self._refresh_ui(status=f"Stored reference point for {point.label}")
+
+    def _handle_reference3d_pick(self, x: float, y: float, z: float) -> None:
+        if self.reference_3d is None:
+            return
+        point_3d = np.array([x, y, z], dtype=np.float64)
+
+        if self.plane_pick_mode:
+            self.pending_plane_points.append(point_3d)
+            self.reference3d_viewer.set_temporary_points(self.pending_plane_points)
+            if len(self.pending_plane_points) == 3:
+                plane = define_plane_from_3_points(*self.pending_plane_points)
+                self._apply_working_plane(plane, "Defined working plane from 3 points")
+            else:
+                self.statusBar().showMessage(
+                    f"Working plane: picked {len(self.pending_plane_points)}/3 points",
+                    5000,
+                )
+            return
+
+        if self.reference_3d.working_plane is None:
+            self.statusBar().showMessage(
+                "Define a working plane before picking 3D reference points",
+                5000,
+            )
+            return
+
+        snapped = pick_nearest_point(
+            self.reference_3d,
+            point_3d,
+            tolerance=self._point_pick_tolerance(),
+        )
+        world_point = snapped if snapped is not None else point_3d
+        uv = project_3d_to_plane(
+            np.asarray([world_point], dtype=np.float64),
+            self.reference_3d.working_plane,
+        )[0]
+        point = self._resolve_target_point("reference")
+        if point is None:
+            return
+        point.reference_xy = (float(uv[0]), float(uv[1]))
+        self.reference_world_points[point.id] = world_point
+        self._record_history()
+        self._recompute_transform()
+        self._refresh_ui(status=f"Stored 3D reference point for {point.label}")
+
+    def _start_plane_from_3_points(self) -> None:
+        if self.reference_3d is None:
+            self.statusBar().showMessage("Load a 3D reference first", 5000)
+            return
+        self.pending_plane_points = []
+        self.plane_pick_mode = True
+        self.reference3d_viewer.set_temporary_points([])
+        self.statusBar().showMessage(
+            "Plane mode: pick three points on the 3D geometry",
+            5000,
+        )
+
+    def _define_plane_auto(self) -> None:
+        if self.reference_3d is None:
+            self.statusBar().showMessage("Load a 3D reference first", 5000)
+            return
+        source_points = reference_source_points(self.reference_3d)
+        if source_points is None or len(source_points) < 3:
+            QMessageBox.warning(self, "Plane fit failed", "3D reference contains too few points.")
+            return
+        try:
+            plane = define_plane_ransac(source_points)
+        except Exception as exc:
+            QMessageBox.critical(self, "Plane fit failed", str(exc))
+            return
+        self._apply_working_plane(plane, "Defined working plane automatically")
+
+    def _apply_working_plane(self, plane: WorkingPlane, status: str) -> None:
+        if self.reference_3d is None:
+            return
+        self.reference_3d.working_plane = plane
+        self.project.working_plane = working_plane_to_dict(plane)
+        self.pending_plane_points = []
+        self.plane_pick_mode = False
+        for point_id, world_point in list(self.reference_world_points.items()):
+            point = self.project.get_point(point_id)
+            if point is None:
+                self.reference_world_points.pop(point_id, None)
+                continue
+            uv = project_3d_to_plane(np.asarray([world_point]), plane)[0]
+            point.reference_xy = (float(uv[0]), float(uv[1]))
+        self._record_history()
+        self._recompute_transform()
+        self._refresh_ui(status=status)
+
+    def _resolve_target_point(self, side: str) -> ControlPoint | None:
+        current_point_id = self.point_table.current_point_id()
+        selected = (
+            self.project.get_point(current_point_id) if current_point_id is not None else None
+        )
+        if selected is not None and selected.locked:
+            self.statusBar().showMessage("Selected point is locked", 3000)
+            return None
+
+        if side == "image":
+            if selected is not None and selected.image_xy is None:
+                return selected
+            for point in reversed(self.project.points):
+                if not point.locked and point.image_xy is None and point.reference_xy is not None:
+                    self._set_selected_point(point.id)
+                    return point
+        else:
+            if selected is not None and selected.reference_xy is None:
+                return selected
+            for point in reversed(self.project.points):
+                if not point.locked and point.reference_xy is None and point.image_xy is not None:
+                    self._set_selected_point(point.id)
+                    return point
+
+        point = self.project.add_point()
+        self._set_selected_point(point.id)
+        return point
+
+    def _delete_selected_point(self) -> None:
+        point_id = self.point_table.current_point_id()
+        if point_id is None:
+            return
+        self.project.remove_point(point_id)
+        self.reference_world_points.pop(point_id, None)
+        if self.selected_point_id == point_id:
+            self.selected_point_id = None
+        self._record_history()
+        self._recompute_transform()
+        self._refresh_ui(status=f"Deleted point {point_id}")
+
+    def _move_selected_point(self, offset: int) -> None:
+        point_id = self.point_table.current_point_id()
+        if point_id is None:
+            return
+        self.project.move_point(point_id, offset)
+        self._record_history()
+        self._refresh_ui(status=f"Reordered point {point_id}")
+        self._set_selected_point(point_id)
+
+    def _update_point_label(self, point_id: int, label: str) -> None:
+        point = self.project.get_point(point_id)
+        if point is None:
+            return
+        point.label = label or point.label
+        self._record_history()
+        self._refresh_ui(status=f"Updated label for point {point_id}")
+
+    def _update_point_lock(self, point_id: int, locked: bool) -> None:
+        point = self.project.get_point(point_id)
+        if point is None:
+            return
+        point.locked = locked
+        self._record_history()
+        self._refresh_ui(status=f"{'Locked' if locked else 'Unlocked'} point {point_id}")
+
+    def _set_selected_point(self, point_id: int | None) -> None:
+        self.selected_point_id = point_id
+        self.point_table.select_point(point_id)
+        self.image_viewer.set_points(self.project.points, point_id)
+        self.reference_viewer.set_points(self.project.points, point_id)
+        self.reference3d_viewer.set_control_points(
+            self.reference_world_points,
+            point_id,
+        )
+
+    def _recompute_transform(self) -> None:
+        paired_points = self.project.paired_points()
+        self.project.clear_solver_state()
+        self.transform_result = None
+
+        if len(paired_points) < 4:
+            return
+
+        try:
+            result = solve_planar_homography(
+                [point.image_xy for point in paired_points if point.image_xy is not None],
+                [point.reference_xy for point in paired_points if point.reference_xy is not None],
+            )
+        except Exception as exc:
+            self.project.warnings = [str(exc)]
+            return
+
+        self.transform_result = result
+        self.project.transform_matrix = result.matrix.tolist()
+        self.project.warnings = list(result.warnings)
+        self.project.rms_error = result.rms_error
+        for point, residual, residual_vector in zip(
+            paired_points,
+            result.residuals,
+            result.residual_vectors,
+            strict=True,
+        ):
+            point.residual = residual
+            point.residual_vector = residual_vector
+
+    def _refresh_ui(self, status: str | None = None) -> None:
+        self.image_viewer.set_image(self.source_image)
+        self.reference_viewer.set_reference(self.reference_2d)
+        self.reference_viewer.set_points(self.project.points, self.selected_point_id)
+        self.reference3d_viewer.set_reference(self.reference_3d)
+        if self.reference_3d is not None:
+            self.reference3d_viewer.set_working_plane(
+                self.reference_3d.working_plane,
+                self._safe_plane_extents(),
+            )
+        self.reference3d_viewer.set_control_points(
+            self.reference_world_points,
+            self.selected_point_id,
+        )
+        self.reference3d_viewer.set_temporary_points(self.pending_plane_points)
+        self.image_viewer.set_points(self.project.points, self.selected_point_id)
+        self.point_table.set_points(self.project.points, self.selected_point_id)
+        self._populate_layer_list()
+        self._sync_reference_mode()
+
+        if self.project.rms_error is None:
+            self.rms_label.setText("RMS: n/a")
+        else:
+            self.rms_label.setText(f"RMS: {self.project.rms_error:.3f} {self.project.units}")
+        self.rms_label.setStyleSheet(f"color: {color_for_rms(self.project.rms_error)};")
+
+        warning_text = ", ".join(self.project.warnings) if self.project.warnings else "none"
+        if self.plane_pick_mode:
+            warning_text = f"{warning_text}; working plane pick mode active"
+        self.warning_label.setText(f"\u26a0 Warnings: {warning_text}")
+        self._update_window_title()
+        self._update_history_actions()
+        self._update_3d_actions()
+        if status is not None:
+            self.statusBar().showMessage(status, 5000)
+
+    def _reload_assets_from_project(self) -> None:
+        self.source_image = None
+        self.reference_2d = None
+        self.reference_3d = None
+        if self.project.image_path and Path(self.project.image_path).exists():
+            self.source_image = load_image(self.project.image_path)
+
+        reference_path = Path(self.project.reference_path) if self.project.reference_path else None
+        if reference_path and reference_path.exists():
+            if self.project.reference_type == "dxf":
+                self.reference_2d = load_dxf(reference_path)
+            elif self.project.reference_type == "e57":
+                self.reference_3d = load_e57(reference_path)
+            elif self.project.reference_type == "obj":
+                self.reference_3d = load_obj(reference_path)
+
+        if self.reference_3d is not None:
+            self.reference_3d.working_plane = working_plane_from_dict(self.project.working_plane)
+        self._recompute_transform()
+
+    def _populate_layer_list(self) -> None:
+        current_states = {
+            self.layer_list.item(index).text(): self.layer_list.item(index).checkState()
+            == Qt.Checked
+            for index in range(self.layer_list.count())
+        }
+        self.layer_list.blockSignals(True)
+        self.layer_list.clear()
+        if self.reference_2d is not None:
+            for layer in self.reference_2d.layers:
+                item = QListWidgetItem(layer.name)
+                item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
+                visible = current_states.get(layer.name, layer.visible)
+                item.setCheckState(Qt.Checked if visible else Qt.Unchecked)
+                self.layer_list.addItem(item)
+                self.reference_viewer.set_layer_visibility(layer.name, visible)
+        self.layer_list.blockSignals(False)
+
+    def _layer_item_changed(self, item: QListWidgetItem) -> None:
+        self.reference_viewer.set_layer_visibility(item.text(), item.checkState() == Qt.Checked)
+
+    def _sync_reference_mode(self) -> None:
+        if self.project.reference_type == "dxf" or self.reference_3d is None:
+            self.reference_stack.setCurrentWidget(self.reference_viewer)
+            self.layer_box.show()
+            self.workflow_label.setText(
+                "Workflow: click image point, then matching DXF reference point"
+            )
+        else:
+            self.reference_stack.setCurrentWidget(self.reference3d_viewer)
+            self.layer_box.hide()
+            if self.reference_3d.working_plane is None:
+                self.workflow_label.setText(
+                    "Workflow: define a working plane, then click image and 3D reference points"
+                )
+            else:
+                self.workflow_label.setText(
+                    "Workflow: click image point, then matching 3D reference point on the plane"
+                )
+
+    def _update_3d_actions(self) -> None:
+        enabled = self.reference_3d is not None
+        self.action_define_plane_from_points.setEnabled(enabled)
+        self.action_define_plane_auto.setEnabled(enabled)
+
+    def _record_history(self) -> None:
+        if self._restoring_history:
+            return
+        snapshot = self.project.clone()
+        self._history = self._history[: self._history_index + 1]
+        self._history.append(snapshot)
+        self._history_index += 1
+        self._update_history_actions()
+
+    def _reset_history(self) -> None:
+        self._history = [self.project.clone()]
+        self._history_index = 0
+        self._update_history_actions()
+
+    def _undo(self) -> None:
+        if self._history_index > 0:
+            self._restore_history_index(self._history_index - 1)
+
+    def _redo(self) -> None:
+        if self._history_index < len(self._history) - 1:
+            self._restore_history_index(self._history_index + 1)
+
+    def _restore_history_index(self, index: int) -> None:
+        self._restoring_history = True
+        try:
+            self._history_index = index
+            self.project = self._history[index].clone()
+            self.selected_point_id = None
+            self.reference_world_points = {}
+            self.pending_plane_points = []
+            self.plane_pick_mode = False
+            self._reload_assets_from_project()
+            self._refresh_ui(status="Restored previous edit state")
+        finally:
+            self._restoring_history = False
+
+    def _update_history_actions(self) -> None:
+        self.action_undo.setEnabled(self._history_index > 0)
+        self.action_redo.setEnabled(self._history_index < len(self._history) - 1)
+
+    def _update_window_title(self) -> None:
+        project_label = self.project_path.name if self.project_path else self.project.name
+        self.setWindowTitle(f"ImageRect — Metric Image Rectification — {project_label}")
+
+    def _point_pick_tolerance(self) -> float:
+        if self.reference_3d is None:
+            return 0.0
+        source_points = reference_source_points(self.reference_3d)
+        if source_points is None or len(source_points) == 0:
+            return 0.0
+        bounds_min = source_points.min(axis=0)
+        bounds_max = source_points.max(axis=0)
+        span = np.linalg.norm(bounds_max - bounds_min)
+        return max(float(span) * 0.02, 1e-6)
+
+    def _safe_plane_extents(self) -> tuple[tuple[float, float], tuple[float, float]] | None:
+        if self.reference_3d is None or self.reference_3d.working_plane is None:
+            return None
+        try:
+            return reference_plane_extents(self.reference_3d)
+        except Exception:
+            return None
+
+    def _current_reference_extents(self) -> tuple[tuple[float, float], tuple[float, float]]:
+        if self.reference_2d is not None:
+            return self.reference_2d.extents_min, self.reference_2d.extents_max
+        if self.reference_3d is not None and self.reference_3d.working_plane is not None:
+            try:
+                return reference_plane_extents(self.reference_3d)
+            except Exception:
+                pass
+        paired_points = self.project.paired_points()
+        if not paired_points:
+            raise ValueError("No reference extents available for export.")
+        reference_xy = np.asarray(
+            [point.reference_xy for point in paired_points if point.reference_xy is not None],
+            dtype=np.float64,
+        )
+        mins = reference_xy.min(axis=0)
+        maxs = reference_xy.max(axis=0)
+        return (float(mins[0]), float(mins[1])), (float(maxs[0]), float(maxs[1]))
