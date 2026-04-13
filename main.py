@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from ui.main_window import MainWindow
@@ -40,6 +41,10 @@ def main(argv: list[str] | None = None) -> int:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
     app = QApplication(sys.argv if argv is None else [sys.argv[0], *argv])
+    app_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    icon_path = app_root / "assets" / "icon.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     apply_theme(app)
     window = MainWindow()
 

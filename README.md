@@ -37,13 +37,35 @@ Optional 3D support:
 
 `open3d` is used when available for E57 downsampling and automatic plane fitting. If it is unavailable on your platform, OBJ loading and the manual 3-point plane workflow still work, and plane fitting falls back to an SVD-based estimate.
 
-## Install From Release Binary
+## Installation
 
-1. Download the latest archive for your platform from the GitHub Releases page.
-2. Extract the archive.
-3. Launch `ImageRect` on Linux/macOS or `ImageRect.exe` on Windows.
+**Windows:**
 
-Release binaries are intended for quick evaluation. Building from source remains the most reliable way to get optional 3D extras.
+- Download `ImageRect-x.x.x-Setup.exe` from [GitHub Releases](https://github.com/andremadstop/imagerect/releases).
+- Run the installer. It installs to Program Files and creates a Start Menu entry.
+- If you prefer a portable build, download `ImageRect.exe` instead.
+
+**Linux:**
+
+- Download `ImageRect` from GitHub Releases.
+- Run `chmod +x ImageRect && ./ImageRect`.
+- Optional: copy [installer/imagerect.desktop](/home/andre/Workspace/Code/imagerect/installer/imagerect.desktop) to `~/.local/share/applications/`.
+
+**macOS:**
+
+- Download `ImageRect.app` from GitHub Releases.
+- Move it to Applications.
+- For the first launch on an unsigned build, right-click and choose `Open`.
+
+**From source:**
+
+```bash
+git clone https://github.com/andremadstop/imagerect.git
+cd imagerect
+python -m venv .venv
+.venv/bin/pip install -e '.[dev,3d]'
+.venv/bin/python main.py
+```
 
 ## Run
 

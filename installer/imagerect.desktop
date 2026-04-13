@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ImageRect
+Comment=Metric image rectification from CAD, point clouds, and 3D models
+Exec=ImageRect
+Icon=imagerect
+Categories=Graphics;Engineering;Science;
+Keywords=rectification;photogrammetry;dxf;point-cloud;
+Terminal=false
+StartupNotify=true

@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <rect width="256" height="256" rx="52" fill="#0D0E12"/>
+  <g opacity="0.92">
+    <rect
+      x="40"
+      y="54"
+      width="118"
+      height="118"
+      rx="18"
+      transform="rotate(-13 40 54)"
+      fill="#4A9EFF"
+      fill-opacity="0.16"
+      stroke="#4A9EFF"
+      stroke-width="14"
+    />
+    <path
+      d="M73 98H179C187.837 98 195 105.163 195 114V183C195 191.837 187.837 199 179 199H83C74.1634 199 67 191.837 67 183V104C67 100.686 69.6863 98 73 98Z"
+      fill="#F7FBFF"
+      stroke="#4A9EFF"
+      stroke-width="14"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M98 121H165"
+      stroke="#4A9EFF"
+      stroke-opacity="0.55"
+      stroke-width="10"
+      stroke-linecap="round"
+    />
+    <path
+      d="M98 148H165"
+      stroke="#4A9EFF"
+      stroke-opacity="0.55"
+      stroke-width="10"
+      stroke-linecap="round"
+    />
+    <path
+      d="M98 175H146"
+      stroke="#4A9EFF"
+      stroke-opacity="0.55"
+      stroke-width="10"
+      stroke-linecap="round"
+    />
+    <path
+      d="M76 188L58 204"
+      stroke="#4A9EFF"
+      stroke-width="12"
+      stroke-linecap="round"
+    />
+    <path
+      d="M180 98L198 82"
+      stroke="#4A9EFF"
+      stroke-width="12"
+      stroke-linecap="round"
+    />
+  </g>
+</svg>

@@ -1,13 +1,19 @@
+import platform
 from pathlib import Path
 
 block_cipher = None
 root = Path(SPECPATH)
+icon_path = None
+if platform.system() == "Windows":
+    icon_path = "assets/icon.ico"
+elif platform.system() == "Darwin":
+    icon_path = "assets/icon.icns"
 
 a = Analysis(
     ["main.py"],
     pathex=[str(root)],
     binaries=[],
-    datas=[],
+    datas=[("assets/icon.png", "assets")],
     hiddenimports=[
         "PySide6.QtCore",
         "PySide6.QtGui",
@@ -39,5 +45,5 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    icon=None,
+    icon=icon_path,
 )

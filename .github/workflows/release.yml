@@ -37,8 +37,27 @@ jobs:
           name: ${{ matrix.artifact }}
           path: dist/
 
-  release:
+  build-windows-installer:
     needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ImageRect-windows
+          path: dist/
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+      - name: Build installer
+        run: iscc installer/imagerect.iss
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImageRect-windows-installer
+          path: dist/installer/ImageRect-*-Setup.exe
+
+  release:
+    needs: [build, build-windows-installer]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
