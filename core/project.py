@@ -10,6 +10,13 @@ from typing import Any
 
 Point2D = tuple[float, float]
 ReferenceRoi = tuple[float, float, float, float]
+UNIT_TO_MM = {
+    "mm": 1.0,
+    "cm": 10.0,
+    "m": 1000.0,
+    "in": 25.4,
+    "ft": 304.8,
+}
 
 
 def _now_iso() -> str:
@@ -42,6 +49,10 @@ def _coerce_reference_roi(raw: Any) -> ReferenceRoi | None:
     return (values[0], values[1], values[2], values[3])
 
 
+def unit_to_mm(units: str) -> float:
+    return UNIT_TO_MM.get(units, 1.0)
+
+
 @dataclass(slots=True)
 class ControlPoint:
     """A single control point pair row."""
@@ -62,9 +73,18 @@ class ControlPoint:
 @dataclass(slots=True)
 class ExportSettings:
     pixel_size: float = 1.0
+    scale_denominator: float = 11.811023622047244
+    dpi: float = 300.0
     resampling: str = "bilinear"
     output_format: str = "tiff"
+    bit_depth: int = 8
+    compression: str = "none"
+    multi_layer: bool = False
+    use_clip_polygon: bool = True
+    use_reference_roi: bool = True
     clip_to_hull: bool = False
+    include_json_sidecar: bool = True
+    embed_in_tiff: bool = True
 
 
 @dataclass(slots=True)

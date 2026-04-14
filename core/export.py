@@ -12,7 +12,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from core.project import ControlPoint
+from core.project import ControlPoint, unit_to_mm
 
 Point2D = tuple[float, float]
 
@@ -20,6 +20,7 @@ INTERPOLATION_FLAGS = {
     "nearest": cv2.INTER_NEAREST,
     "bilinear": cv2.INTER_LINEAR,
     "bicubic": cv2.INTER_CUBIC,
+    "lanczos": cv2.INTER_LANCZOS4,
 }
 
 
@@ -46,6 +47,7 @@ def export_rectified_image(
     clip_to_hull: bool = False,
     clip_polygon: Sequence[Point2D] | None = None,
     reference_roi: tuple[float, float, float, float] | None = None,
+    write_metadata_json: bool = True,
     reference_extents: tuple[Point2D, Point2D] | None = None,
     project_name: str = "Untitled",
     rms_error: float | None = None,
@@ -63,7 +65,8 @@ def export_rectified_image(
         bounds_min, bounds_max = reference_extents or _bounds_from_points(
             [point.reference_xy for point in control_points if point.reference_xy is not None]
         )
-    width, height, reference_to_canvas = build_canvas(bounds_min, bounds_max, pixel_size)
+    pixel_size_units = pixel_size / unit_to_mm(units)
+    width, height, reference_to_canvas = build_canvas(bounds_min, bounds_max, pixel_size_units)
     transform_to_canvas = reference_to_canvas @ homography_image_to_reference
     interpolation = INTERPOLATION_FLAGS.get(resampling, cv2.INTER_LINEAR)
     warped = cv2.warpPerspective(
@@ -93,6 +96,7 @@ def export_rectified_image(
         "timestamp": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "units": units,
         "pixel_size": pixel_size,
+        "pixel_size_reference_units": pixel_size_units,
         "canvas": {
             "width": width,
             "height": height,
@@ -117,7 +121,8 @@ def export_rectified_image(
             for point in control_points
         ],
     }
-    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    if write_metadata_json:
+        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
     return RectificationExportResult(
         image_path=image_path,

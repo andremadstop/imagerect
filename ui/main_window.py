@@ -9,6 +9,7 @@ import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QFont, QKeySequence
 from PySide6.QtWidgets import (
+    QDockWidget,
     QFileDialog,
     QFrame,
     QGroupBox,
@@ -29,7 +30,7 @@ from PySide6.QtWidgets import (
 from core.export import RectificationExportResult, export_rectified_image
 from core.image import load_image
 from core.lens import LensProfile, apply_lens_correction, lens_profile_from_dict
-from core.project import ControlPoint, Point2D, ProjectData, ReferenceRoi
+from core.project import ControlPoint, ExportSettings, Point2D, ProjectData, ReferenceRoi
 from core.reference2d import Reference2D, load_dxf
 from core.reference3d import (
     Reference3D,
@@ -46,10 +47,10 @@ from core.reference3d import (
     working_plane_to_dict,
 )
 from core.transform import HomographyResult, solve_planar_homography
-from ui.export_dialog import ExportDialog
 from ui.image_viewer import ImageViewer
 from ui.lens_dialog import LensDialog
 from ui.point_table import PointTable
+from ui.project_panel import ProjectPanel
 from ui.reference2d_viewer import Reference2DViewer
 from ui.reference3d_viewer import Reference3DViewer
 from ui.theme import (
@@ -188,12 +189,14 @@ class MainWindow(QMainWindow):
         if self.transform_result is None or self.project.transform_matrix is None:
             raise ValueError("At least four valid point pairs are required before export.")
 
-        reference_extents = self._current_reference_extents()
-        dialog = ExportDialog(self.project.export_settings, self)
-        if dialog.exec() == 0:
-            return None
+        settings = self.project.export_settings
+        if settings.output_format not in {"tiff", "png"}:
+            raise ValueError(
+                f"{settings.output_format.upper()} export will be available "
+                "after the export-engine upgrade."
+            )
 
-        self.project.export_settings = dialog.get_settings()
+        reference_extents = self._current_reference_extents()
         default_path = Path.cwd() / f"{self.project.name}_rectified"
         file_name, _ = QFileDialog.getSaveFileName(
             self,
@@ -211,23 +214,29 @@ class MainWindow(QMainWindow):
             ),
             control_points=self.project.paired_points(),
             output_path=file_name,
-            pixel_size=self.project.export_settings.pixel_size,
+            pixel_size=settings.pixel_size,
             units=self.project.units,
-            output_format=self.project.export_settings.output_format,
-            resampling=self.project.export_settings.resampling,
-            clip_to_hull=self.project.export_settings.clip_to_hull,
-            clip_polygon=self.project.clip_polygon,
-            reference_roi=self.project.reference_roi,
+            output_format=settings.output_format,
+            resampling=settings.resampling,
+            clip_to_hull=settings.clip_to_hull,
+            clip_polygon=self.project.clip_polygon if settings.use_clip_polygon else None,
+            reference_roi=self.project.reference_roi if settings.use_reference_roi else None,
+            write_metadata_json=settings.include_json_sidecar,
             reference_extents=reference_extents,
             project_name=self.project.name,
             rms_error=self.project.rms_error,
             warnings=self.project.warnings,
         )
         self.statusBar().showMessage(f"Exported {result.image_path.name}", 5000)
+        metadata_text = (
+            f"\nMetadata: {result.metadata_path}"
+            if result.metadata_path.exists()
+            else "\nMetadata: disabled"
+        )
         QMessageBox.information(
             self,
             "Export complete",
-            f"Image: {result.image_path}\nMetadata: {result.metadata_path}",
+            f"Image: {result.image_path}{metadata_text}",
         )
         return result
 
@@ -395,6 +404,14 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar(self))
 
+        self.project_panel = ProjectPanel(self)
+        self.project_dock = QDockWidget("Project Settings", self)
+        self.project_dock.setObjectName("projectSettingsDock")
+        self.project_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.project_dock.setWidget(self.project_panel)
+        self.project_dock.setMinimumWidth(320)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.project_dock)
+
     def _create_actions(self) -> None:
         self.action_new = QAction("New", self)
         self.action_new.setShortcut(QKeySequence.New)
@@ -419,6 +436,9 @@ class MainWindow(QMainWindow):
         self.action_define_plane_auto = QAction("Plane Auto", self)
         self.action_export = QAction("Export Rectified Image", self)
         self.action_export.setShortcut(QKeySequence("Ctrl+E"))
+        self.action_toggle_project_panel = self.project_dock.toggleViewAction()
+        self.action_toggle_project_panel.setText("Project Settings")
+        self.action_toggle_project_panel.setShortcut(QKeySequence("Ctrl+P"))
         self.action_delete_point = QAction("Delete Point", self)
         self.action_delete_point.setShortcut(QKeySequence.Delete)
         self.action_move_up = QAction("Move Point Up", self)
@@ -458,6 +478,8 @@ class MainWindow(QMainWindow):
         menu_view = self.menuBar().addMenu("View")
         menu_view.addAction(self.action_image_roi)
         menu_view.addAction(self.action_reference_roi)
+        menu_view.addSeparator()
+        menu_view.addAction(self.action_toggle_project_panel)
 
         menu_edit = self.menuBar().addMenu("Edit")
         menu_edit.addAction(self.action_undo)
@@ -510,6 +532,9 @@ class MainWindow(QMainWindow):
         self.point_table.label_changed.connect(self._update_point_label)
         self.point_table.lock_changed.connect(self._update_point_lock)
         self.point_table.delete_requested.connect(self._delete_selected_point)
+        self.project_panel.project_name_changed.connect(self._update_project_name)
+        self.project_panel.units_changed.connect(self._update_project_units)
+        self.project_panel.export_settings_changed.connect(self._update_export_settings)
         self.layer_list.itemChanged.connect(self._layer_item_changed)
 
         self.action_new.triggered.connect(self._new_project)
@@ -790,6 +815,27 @@ class MainWindow(QMainWindow):
         self._record_history()
         self._refresh_ui(status=f"{'Locked' if locked else 'Unlocked'} point {point_id}")
 
+    def _update_project_name(self, name: str) -> None:
+        self.project.name = name
+        self.project.touch()
+        self._update_window_title()
+
+    def _update_project_units(self, units: str) -> None:
+        self.project.units = units
+        self.project.touch()
+        if self.project.rms_error is None:
+            self.rms_label.setText("RMS: n/a")
+        else:
+            self.rms_label.setText(f"RMS: {self.project.rms_error:.3f} {self.project.units}")
+        self._refresh_project_panel_context()
+
+    def _update_export_settings(self, settings: object) -> None:
+        if not isinstance(settings, ExportSettings):
+            return
+        self.project.export_settings = settings
+        self.project.touch()
+        self._refresh_project_panel_context()
+
     def _set_selected_point(self, point_id: int | None) -> None:
         self.selected_point_id = point_id
         self.point_table.select_point(point_id)
@@ -851,6 +897,8 @@ class MainWindow(QMainWindow):
         self.reference_viewer.set_reference_roi(self.project.reference_roi)
         self.reference_viewer.set_reference_roi_mode(self.action_reference_roi.isChecked())
         self.point_table.set_points(self.project.points, self.selected_point_id)
+        self.project_panel.set_project(self.project)
+        self._refresh_project_panel_context()
         self._populate_layer_list()
         self._sync_reference_mode()
 
@@ -1054,6 +1102,26 @@ class MainWindow(QMainWindow):
     def _update_window_title(self) -> None:
         project_label = self.project_path.name if self.project_path else self.project.name
         self.setWindowTitle(f"ImageRect — Metric Image Rectification — {project_label}")
+
+    def _refresh_project_panel_context(self) -> None:
+        bounds = self._current_panel_bounds()
+        self.project_panel.set_context(
+            bounds,
+            has_clip_polygon=bool(self.project.clip_polygon),
+            has_reference_roi=bool(self.project.reference_roi),
+        )
+
+    def _current_panel_bounds(self) -> tuple[Point2D, Point2D] | None:
+        if (
+            self.project.export_settings.use_reference_roi
+            and self.project.reference_roi is not None
+        ):
+            x0, y0, x1, y1 = self.project.reference_roi
+            return (min(x0, x1), min(y0, y1)), (max(x0, x1), max(y0, y1))
+        try:
+            return self._current_reference_extents()
+        except ValueError:
+            return None
 
     def _point_pick_tolerance(self) -> float:
         if self.reference_3d is None:
