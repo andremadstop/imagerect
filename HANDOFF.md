@@ -3,6 +3,42 @@
 > Wird nach jeder größeren Session aktualisiert. Codex/Claude liest
 > das als erstes wenn eine neue Session startet.
 
+## Stand 2026-04-14 nachts — Task 015 abgeschlossen, jetzt STOP
+
+### Was in dieser Session fertig wurde
+
+- **Task 015 — DXF-Viewer State Preservation** abgeschlossen in
+  4 Commits auf `main`:
+  `13ac851` (`fix: preserve dxf view state across refreshes`),
+  `74416b1` (`fix: auto-zoom the first dxf roi`),
+  `0b32d5a` (`feat: add dxf view fit actions`),
+  `436e415` (`docs: note the harmless wayland mouse-grab warning`)
+- `Reference2DViewer.set_reference()` behält den aktuellen Transform
+  bei identischem DXF-Objekt und fit-t nur noch bei echtem
+  Referenz-Wechsel
+- Erste sinnvolle DXF-ROI zoomt genau einmal in die Region; danach
+  bleibt die Ansicht stabil
+- Neues Menü **Ansicht** mit `Ctrl+0` (An DXF anpassen),
+  `Ctrl+Shift+0` (An ROI anpassen) und `Ctrl+1` (Bild anpassen)
+- `grabMouse` kommt laut Repo-Grep aktuell **nicht** aus ImageRect-Code;
+  die Wayland-Warnung ist deshalb als bekanntes Qt-Gotcha in
+  `AGENTS.md` dokumentiert
+
+### Was grün ist
+
+- `.venv/bin/pre-commit run --all-files`
+- `QT_QPA_PLATFORM=offscreen .venv/bin/pytest -v`
+- `QT_QPA_PLATFORM=offscreen .venv/bin/python main.py --smoke-test`
+
+### Nächster Zustand
+
+- **STOP bis Andre manuell testet**
+- Andre soll jetzt Lens-Dialog + DXF-Navigation interaktiv prüfen:
+  Viewport bleibt nach Punktsetzung, ROI zoomt einmalig, Menü-Shortcuts
+  greifen, Lens-Preview/Apply bleibt sichtbar
+- Erst nach Andres Freigabe weiter zu anderen Tasks; laut Handoff keine
+  eigenmächtige Fortsetzung zu 010/011/012/013/016
+
 ## Stand 2026-04-14 spätabends — Task 014 abgeschlossen, Task 015 als Nächstes
 
 ### Was in dieser Session fertig wurde
