@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QFont, QKeySequence
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.diagnose import build_diagnose_package
 from core.export import (
     ExportCancelledError,
     MosaicSource,
@@ -44,6 +46,7 @@ from core.lens import (
     lens_profile_from_dict,
     remap_points_between_profiles,
 )
+from core.logging_setup import log_directory
 from core.pose import build_camera_pose, extract_gps_pose, gps_offset_meters, gps_to_reference_xy
 from core.project import (
     ControlPoint,
@@ -558,6 +561,8 @@ class MainWindow(QMainWindow):
         self.action_undo.setShortcut(QKeySequence.Undo)
         self.action_redo = QAction("Redo", self)
         self.action_redo.setShortcut(QKeySequence.Redo)
+        self.action_open_log_directory = QAction("Log-Ordner öffnen", self)
+        self.action_export_diagnose_package = QAction("Diagnose-Paket exportieren...", self)
 
         self.action_load_image.setIcon(make_symbol_icon("📷"))
         self.action_lens_correction.setIcon(make_symbol_icon("🔍"))
@@ -601,6 +606,10 @@ class MainWindow(QMainWindow):
         menu_3d = self.menuBar().addMenu("3D")
         menu_3d.addAction(self.action_define_plane_from_points)
         menu_3d.addAction(self.action_define_plane_auto)
+
+        menu_help = self.menuBar().addMenu("Hilfe")
+        menu_help.addAction(self.action_open_log_directory)
+        menu_help.addAction(self.action_export_diagnose_package)
 
         toolbar = QToolBar("Main", self)
         toolbar.setMovable(False)
@@ -665,6 +674,8 @@ class MainWindow(QMainWindow):
         self.action_move_down.triggered.connect(lambda checked=False: self._move_selected_point(1))
         self.action_undo.triggered.connect(self._undo)
         self.action_redo.triggered.connect(self._redo)
+        self.action_open_log_directory.triggered.connect(self._open_log_directory)
+        self.action_export_diagnose_package.triggered.connect(self._export_diagnose_package)
 
     def _open_image_dialog(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(
@@ -743,6 +754,44 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             logger.exception("Export dialog failed")
             QMessageBox.critical(self, "Export failed", str(exc))
+
+    def _open_log_directory(self) -> None:
+        directory = log_directory()
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory))):
+            logger.warning("Could not open log directory in file manager | path=%s", directory)
+            QMessageBox.warning(
+                self,
+                "Log-Ordner öffnen fehlgeschlagen",
+                f"Der Log-Ordner konnte nicht geöffnet werden:\n{directory}",
+            )
+            return
+        logger.info("Opened log directory in file manager | path=%s", directory)
+
+    def _export_diagnose_package(self) -> None:
+        suggested_name = f"imagerect-diagnose-{datetime.now().strftime('%Y-%m-%d')}.zip"
+        default_path = Path.cwd() / suggested_name
+        file_name, _ = QFileDialog.getSaveFileName(
+            self,
+            "Diagnose-Paket exportieren",
+            str(default_path),
+            "ZIP-Dateien (*.zip)",
+        )
+        if not file_name:
+            return
+
+        try:
+            package_path = build_diagnose_package(Path(file_name), self.project_path)
+        except Exception as exc:
+            logger.exception("Diagnose package export failed")
+            QMessageBox.critical(self, "Diagnose-Paket fehlgeschlagen", str(exc))
+            return
+
+        QMessageBox.information(
+            self,
+            "Diagnose-Paket exportiert",
+            f"Datei gespeichert unter:\n{package_path}",
+        )
+        logger.info("Diagnose package exported from UI | path=%s", package_path)
 
     def _new_project(self) -> None:
         self.project = ProjectData()
