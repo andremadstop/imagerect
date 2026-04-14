@@ -1618,7 +1618,16 @@ class MainWindow(QMainWindow):
             self.source_image = self.source_image_original.copy()
             return
 
-        self.source_image = apply_lens_correction(self.source_image_original, profile)
+        corrected = apply_lens_correction(self.source_image_original, profile)
+        mean_abs_delta = float(
+            np.abs(corrected.astype(np.int16) - self.source_image_original.astype(np.int16)).mean()
+        )
+        logger.debug(
+            "Refreshed source image with lens correction | profile=%s | mean_abs_delta=%.4f",
+            profile.name,
+            mean_abs_delta,
+        )
+        self.source_image = corrected
 
     def _safe_plane_extents(self) -> tuple[tuple[float, float], tuple[float, float]] | None:
         if self.reference_3d is None or self.reference_3d.working_plane is None:

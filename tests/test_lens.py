@@ -151,3 +151,62 @@ def test_lens_correction_remaps_control_points(qtbot: Any) -> None:
         np.asarray(expected_result.projected_reference_points),
         atol=1e-6,
     )
+
+
+def test_apply_lens_changes_source_image_pixels() -> None:
+    profile = LensProfile(
+        name="visible",
+        focal_length_mm=24.0,
+        sensor_width_mm=17.3,
+        k1=-0.08,
+        k2=0.01,
+    )
+    window = MainWindow()
+    window.source_image_original = _structured_image()
+    window.project.lens_correction = {"profile": profile.to_dict(), "applied": True}
+
+    window._refresh_source_image()
+
+    assert window.source_image is not None
+    assert window.source_image is not window.source_image_original
+    difference = np.abs(
+        window.source_image.astype(np.int16) - window.source_image_original.astype(np.int16)
+    )
+    assert float(difference.mean()) > 0.5
+
+
+def test_refresh_source_image_updates_viewer(qtbot: Any) -> None:
+    profile = LensProfile(
+        name="visible",
+        focal_length_mm=24.0,
+        sensor_width_mm=17.3,
+        k1=-0.08,
+        k2=0.01,
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.resize(960, 720)
+    window.source_image_original = _structured_image()
+    window._refresh_source_image()
+    window._refresh_ui()
+    window.image_viewer.scale(1.4, 1.4)
+    before_transform = window.image_viewer.transform().m11()
+    before_pixmap_key = window.image_viewer._pixmap_item.pixmap().cacheKey()
+
+    window.project.lens_correction = {"profile": profile.to_dict(), "applied": True}
+    window._refresh_source_image()
+    window._refresh_ui()
+
+    after_transform = window.image_viewer.transform().m11()
+    after_pixmap_key = window.image_viewer._pixmap_item.pixmap().cacheKey()
+
+    assert after_pixmap_key != before_pixmap_key
+    assert after_transform == pytest.approx(before_transform)
+
+
+def _structured_image() -> np.ndarray:
+    image = np.zeros((240, 320, 3), dtype=np.uint8)
+    cv2.rectangle(image, (24, 24), (296, 216), (255, 255, 255), 3)
+    cv2.line(image, (0, 120), (319, 120), (0, 255, 0), 2)
+    cv2.line(image, (160, 0), (160, 239), (0, 0, 255), 2)
+    return image

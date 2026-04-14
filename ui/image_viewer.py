@@ -17,6 +17,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
     QPolygonF,
+    QTransform,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
@@ -71,14 +72,16 @@ class ImageViewer(QGraphicsView):
         self.setFocusPolicy(Qt.StrongFocus)
 
     def set_image(self, image: np.ndarray | None) -> None:
-        self._scene.clear()
-        self._pixmap_item = QGraphicsPixmapItem()
-        self._scene.addItem(self._pixmap_item)
-        self._overlay_items.clear()
+        previous_shape = self._image_shape
+        previous_transform = QTransform(self.transform())
+        previous_horizontal = self.horizontalScrollBar().value()
+        previous_vertical = self.verticalScrollBar().value()
+        self._clear_overlays()
         self._image_shape = None
         self._points = []
 
         if image is None:
+            self._pixmap_item.setPixmap(QPixmap())
             self.setSceneRect(0.0, 0.0, 1.0, 1.0)
             return
 
@@ -87,6 +90,16 @@ class ImageViewer(QGraphicsView):
         self._pixmap_item.setPixmap(pixmap)
         self._image_shape = image.shape[:2]
         self.setSceneRect(self._pixmap_item.boundingRect())
+        if previous_shape is None or previous_shape != self._image_shape:
+            self.fit_image_to_view()
+            return
+        self.setTransform(previous_transform)
+        self.horizontalScrollBar().setValue(previous_horizontal)
+        self.verticalScrollBar().setValue(previous_vertical)
+
+    def fit_image_to_view(self) -> None:
+        if self._pixmap_item.pixmap().isNull():
+            return
         self.resetTransform()
         self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
 
@@ -128,9 +141,7 @@ class ImageViewer(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def _redraw_overlays(self) -> None:
-        for item in self._overlay_items:
-            self._scene.removeItem(item)
-        self._overlay_items.clear()
+        self._clear_overlays()
 
         for point in self._points:
             if point.image_xy is None:
@@ -351,6 +362,11 @@ class ImageViewer(QGraphicsView):
             vertex.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
             self._scene.addItem(vertex)
             self._overlay_items.append(vertex)
+
+    def _clear_overlays(self) -> None:
+        for item in self._overlay_items:
+            self._scene.removeItem(item)
+        self._overlay_items.clear()
 
 
 def _array_to_qimage(image: np.ndarray) -> QImage:
