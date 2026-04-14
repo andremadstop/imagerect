@@ -9,4 +9,5 @@ fi
 
 python -m pip install pyinstaller
 pyinstaller imagerect.spec --clean --noconfirm
-echo "Build complete: dist/ImageRect"
+pyinstaller imagerect_cli.spec --clean --noconfirm
+echo "Build complete: dist/ImageRect and dist/ImageRect-cli"

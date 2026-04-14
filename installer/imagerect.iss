@@ -37,6 +37,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "..\dist\ImageRect.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\ImageRect-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; If --onedir mode is used instead of --onefile, use:
 ; Source: "..\dist\ImageRect\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 

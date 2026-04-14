@@ -30,6 +30,16 @@
 10. **README.md** mit Screenshot updaten wenn App stabil aussieht
 11. **GitHub Release v0.2.1** mit vollständigen Release Notes
 
+## Kürzlich abgeschlossen (2026-04-14)
+
+- **Task 010** — CLI-Foundation mit `imagerect-cli export|validate|inspect`
+  plus Release-/Installer-Anbindung
+- **Task 011** — Property-based Tests und Golden-File-Regressionen
+- **Task 012** — Security-Hardening für Bilder, Referenzen,
+  Projektpfade sowie `bandit`/`pip-audit`/Dependabot/CodeQL
+- **Task 013** — `pytest-qt`-Flows für Main-Window-Interaktionen,
+  Projekt-Roundtrip und Menu-Accessibility
+
 ## Mittelfristig (v0.3.0)
 
 ### Qualitäts- und Sicherheits-Hardening (Vorbereitung für externe User)
@@ -38,31 +48,22 @@ Sobald v0.2.1 released ist, lohnen sich diese Investments bevor das
 Projekt ernsthaft beworben wird (Show HN, Reddit, FOSSGIS) — denn dann
 kommen echte User mit echten Files, die möglicherweise malformed sind.
 
-- **Task 011** — Property-based Tests (Hypothesis) für Homographie-Solver,
-  Golden-File-Regression für Export-Pipeline
-- **Task 012** — Security-Hardening: Decompression-Bomb-Schutz,
-  DXF/E57-Parser-Härtung, Pfad-Traversal-Prävention in Projekt-Loader,
-  `bandit` + `pip-audit` + Dependabot + CodeQL in CI
-- **Task 013** — pytest-qt für UI-Flow-Tests (Modifier-Click,
-  Projekt-Roundtrip, Lens-Dialog, Menu-Accessibility)
+- Weitere Hardening-Arbeit jetzt nur noch nach echten User-Findings oder
+  CI-Signalen. Die Grundlagen aus 011/012/013 sind vorhanden.
 
 ### CLI-Foundation — Zielzustand volle CLI-Bedienbarkeit
 
 Kern ist bereits Qt-frei (`core/` ohne Qt-Imports) — CLI kann sich
 sauber draufsetzen. Eigene Task-Serie ab `CODEX-TASK-010-cli-foundation.md`.
 
-**Zielzustand**: `imagerect <subcommand> [flags]` deckt alle nicht-interaktiven
-Operationen ab (Export, Batch, Validate, Inspect). GUI bleibt Erstwahl für
+**Aktueller Stand**: `imagerect-cli export|validate|inspect` deckt die
+ersten nicht-interaktiven Workflows ab. GUI bleibt Erstwahl für
 Kontrollpunkt-Setzung — CLI für Re-Export, CI-Integration, Batch-Jobs.
 
-**Inkrementeller Ausbau** (nicht alles in einem Task):
-1. `imagerect export <project.imagerect.json>` — headless Re-Export eines
-   gespeicherten Projekts mit allen Einstellungen aus der JSON
-2. `imagerect validate <project.imagerect.json>` — Schema/Pfad-Check ohne Export
-3. `imagerect inspect <image|dxf|e57>` — Metadata-Dump (EXIF, DXF-Layer, etc.)
-4. `imagerect batch <verzeichnis>` — mehrere Projekte sequenziell
-5. `imagerect rectify` — vollständiger interaktionsfreier Flow für bekannte
-   Fixture-Szenarien (Regression-Tests, CI-Golden-Files)
+**Nächster CLI-Ausbau**:
+1. `imagerect-cli batch <verzeichnis>` — mehrere Projekte sequenziell
+2. `imagerect-cli rectify` — vollständiger interaktionsfreier Flow für
+   bekannte Fixture-Szenarien (Regression-Tests, CI-Golden-Files)
 
 Tech: `typer` (CLI-Framework), Entry Point in `pyproject.toml` → `imagerect`.
 

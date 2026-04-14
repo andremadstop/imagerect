@@ -3,7 +3,7 @@
 [![CI](https://github.com/andremadstop/imagerect/actions/workflows/ci.yml/badge.svg)](https://github.com/andremadstop/imagerect/actions/workflows/ci.yml)
 [![Release Build](https://github.com/andremadstop/imagerect/actions/workflows/release.yml/badge.svg)](https://github.com/andremadstop/imagerect/actions/workflows/release.yml)
 
-ImageRect is a local-first Linux desktop prototype for manual, metric image rectification against 2D and planar 3D references. The current v0.2.0 scope covers DXF-based rectification plus Phase-2 support for E57 point clouds and OBJ meshes via a user-defined working plane, lens correction, ROI-aware export, tiled large-image output, multi-image mosaics, and GPS pose metadata.
+ImageRect is a local-first Linux desktop prototype for manual, metric image rectification against 2D and planar 3D references. The current `main` scope covers DXF-based rectification plus Phase-2 support for E57 point clouds and OBJ meshes via a user-defined working plane, lens correction, ROI-aware export, tiled large-image output, multi-image mosaics, GPS pose metadata, and a headless CLI for saved projects.
 
 ![Screenshot](docs/screenshot.png)
 
@@ -23,12 +23,14 @@ ImageRect is a local-first Linux desktop prototype for manual, metric image rect
 - Combine multiple source images into a shared mosaic with optional feather blending
 - Extract GPS/EXIF pose hints and write camera pose metadata JSON
 - Save/load project JSON
+- Validate saved projects and re-export them headlessly via `imagerect-cli`
+- Inspect image, DXF, E57, and OBJ files from the command line
 - Export rectified imagery plus metadata JSON
 - Undo/redo point edits, delete points, and reorder point rows
 
 DWG is not a hard dependency in the MVP. Convert DWG to DXF first if needed.
 
-## New features in v0.2.0
+## Recently added on `main`
 
 - Lens correction workflow with preset matching and EXIF-assisted camera selection
 - Image clip polygons and DXF region-of-interest export bounds
@@ -37,6 +39,8 @@ DWG is not a hard dependency in the MVP. Convert DWG to DXF first if needed.
 - Streaming tiled TIFF export for very large canvases
 - Multi-image project support with shared-reference mosaic export
 - GPS/EXIF pose extraction, rough pre-alignment markers, and camera pose metadata output
+- Headless CLI commands for `export`, `validate`, and `inspect`
+- Input hardening for oversized images, malformed reference files, and unsafe relative project paths
 
 ## Setup
 
@@ -61,11 +65,13 @@ Optional 3D support:
 - Download `ImageRect-x.x.x-Setup.exe` from [GitHub Releases](https://github.com/andremadstop/imagerect/releases).
 - Run the installer. It installs to Program Files and creates a Start Menu entry.
 - If you prefer a portable build, download `ImageRect.exe` instead.
+- The release bundle also contains `ImageRect-cli.exe` for headless export and validation.
 
 **Linux:**
 
 - Download `ImageRect` from GitHub Releases.
 - Run `chmod +x ImageRect && ./ImageRect`.
+- The release bundle also contains `ImageRect-cli` for headless workflows.
 - Optional: copy [installer/imagerect.desktop](/home/andre/Workspace/Code/imagerect/installer/imagerect.desktop) to `~/.local/share/applications/`.
 
 **macOS:**
@@ -95,6 +101,14 @@ You can also preload assets:
 ```bash
 .venv/bin/python main.py --image path/to/photo.jpg --reference path/to/reference.dxf
 .venv/bin/python main.py --image path/to/photo.jpg --reference path/to/reference.obj
+```
+
+CLI workflows:
+
+```bash
+.venv/bin/imagerect-cli validate path/to/project.imagerect.json
+.venv/bin/imagerect-cli export path/to/project.imagerect.json --output build/out --format png
+.venv/bin/imagerect-cli inspect tests/sample_data/synthetic_reference.dxf
 ```
 
 ## Workflow
@@ -226,6 +240,14 @@ describing the exact workflow that triggered the issue.
 
 ```bash
 QT_QPA_PLATFORM=offscreen .venv/bin/pytest
+```
+
+CLI quick checks:
+
+```bash
+.venv/bin/imagerect-cli --help
+.venv/bin/imagerect-cli validate tests/golden/golden_project.imagerect.json
+.venv/bin/imagerect-cli export tests/golden/golden_project.imagerect.json --output build/cli-smoke --format png
 ```
 
 ## Synthetic sample data

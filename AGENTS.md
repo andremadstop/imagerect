@@ -40,6 +40,13 @@ ui/                — Qt-Widgets, kein Business
   export_dialog.py   — (Legacy, wird durch project_panel ersetzt)
   theme.py           — Zentrales Dark-Theme + QSS
 
+cli/               — Headless CLI (`imagerect-cli`)
+  main.py            — Root-App + Command-Registration
+  commands_export.py — Re-Export gespeicherter Projekte
+  commands_validate.py — Projekt-/Pfad-/Homographie-Checks
+  commands_inspect.py — Metadata-/Format-Inspektion
+  runtime.py         — Gemeinsame CLI-Helfer
+
 tests/             — pytest-basiert
 main.py            — Entry Point
 assets/            — App-Icon (SVG + generierte ICO/ICNS/PNG)

@@ -13,7 +13,7 @@ repos:
           - types-setuptools
         args: [--ignore-missing-imports]
         pass_filenames: false
-        entry: mypy core/ ui/ main.py
+        entry: mypy cli/ core/ ui/ main.py
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:

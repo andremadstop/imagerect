@@ -11,6 +11,7 @@ git pull
 .venv/bin/pip install -e '.[dev,3d]'
 .venv/bin/pre-commit run --all-files      # muss grün sein
 QT_QPA_PLATFORM=offscreen .venv/bin/pytest -v   # alle grün
+.venv/bin/imagerect-cli --help
 ```
 
 ## Linux-Smoke (Workstation)
@@ -63,6 +64,20 @@ Wenn ein manueller Test fehlschlägt und das Problem nicht sofort klar ist:
 - [ ] Beim Bug-Report an Andre das Diagnose-Paket mitschicken
 - [ ] Kurz dazuschreiben:
   was geklickt wurde, welches Bild/DXF genutzt wurde, was stattdessen passiert ist
+
+## CLI-Smoke
+
+```bash
+.venv/bin/imagerect-cli validate tests/golden/golden_project.imagerect.json
+.venv/bin/imagerect-cli export tests/golden/golden_project.imagerect.json --output build/cli-smoke --format png
+.venv/bin/imagerect-cli inspect tests/sample_data/synthetic_reference.dxf
+```
+
+Checkliste:
+
+- [ ] `validate` meldet das Golden-Projekt als gültig
+- [ ] `export` schreibt `build/cli-smoke.png` und `build/cli-smoke.json`
+- [ ] `inspect` gibt parsebares JSON mit Layern/Bounds aus
 
 ## Echt-Daten-Workflow (St. Georg Berlin)
 
