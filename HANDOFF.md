@@ -1,0 +1,151 @@
+# HANDOFF.md — Aktuelle Session-Situation
+
+> Wird nach jeder größeren Session aktualisiert. Codex/Claude liest
+> das als erstes wenn eine neue Session startet.
+
+## Stand 2026-04-14 spätabends — Tasks 009 + 010 vorbereitet
+
+### Was in dieser Session dazukam
+
+- **ROADMAP.md** erweitert: P1.5 Debugging-Infrastruktur (Task 009),
+  v0.3.0 CLI-Foundation-Block, paralleler Doku-/Promo-Workstream
+- **CODEX-TASK-009-log-export.md** — bereit für Codex, nach Task 008
+  starten. 3 Commits: Logging-Setup → Diagnose-Paket → Docs
+- **CODEX-TASK-010-cli-foundation.md** — Skizze, DRAFT, nicht starten
+  bevor v0.2.1 released ist
+- **docs/** + **promo/** Verzeichnisse angelegt mit README und
+  `promo/channels.md` (Launch-Plan Tier 1/2/3)
+
+### Reihenfolge jetzt
+
+1. Codex macht Task 008 fertig (aktuell autonom unterwegs)
+2. CI grün + v0.2.0 retaggt
+3. Andre testet Windows-Installer
+4. Dann Codex Task 009 (Log-Export) — unblockiert User-Bug-Reports
+5. Doku/Screenshots füllen → v0.2.1 Release
+6. Tier 1 Promo (Show HN, Reddit, Mastodon)
+7. Erst dann Task 010 (CLI-Foundation, v0.3.0)
+
+---
+
+## Stand 2026-04-14 Abend — Session-Ende, Handover an Codex
+
+### Was diese Session gebaut hat
+
+- Task 007 durch Codex autonom erledigt (10 Commits, 22 neue Tests,
+  v0.2.0 getaggt)
+- Task 008 von Codex angefangen (Installer-Fix gepusht, Lens-Fix lokal,
+  CI libEGL-Fix offen)
+- Handover-Dokumentation angelegt: AGENTS.md, ROADMAP.md, TESTING.md,
+  HANDOFF.md
+- Memory-Eintrag project_imagerect.md + feedback_claude_codex_split.md
+- NotebookLM-Notebook erstellt (noch ohne Sources)
+
+### Claude pausiert — Codex übernimmt
+
+Claude (Andre's Session-Tokens) nahe Wochenlimit. Die nächsten Tage
+arbeitet Andre direkt mit Codex weiter anhand dieser 4 Dokumente:
+- AGENTS.md (Konstitution)
+- ROADMAP.md (Priorisierung)
+- TESTING.md (manueller Testplan)
+- HANDOFF.md (dieser Stand)
+
+## Stand davor — Task 007 abgeschlossen
+
+### Was läuft / ist offen
+
+- **Task 008** ist Codex-side **in Arbeit** (CI libEGL + Lens-Remap + v0.2.0 Retag)
+- Lokal uncommittete Änderungen in `core/lens.py` und `ui/main_window.py`
+  (Lens-Remap-Fix, wird in Task 008 Commit 1 gepackt)
+- `.codex` Datei ist untracked, bleibt drin (User-Config)
+
+### Was grün ist
+
+- 39 Pytest-Tests (lokal)
+- Pre-commit Hooks (ruff, mypy, whitespace, yaml)
+- main.py startet, Smoke-Test läuft durch
+- 12 Commits auf main, v0.2.0 getaggt (aber CI rot wegen libEGL)
+- GitHub Repo public: https://github.com/andremadstop/imagerect
+
+### Was rot ist
+
+- **CI-Workflow** auf GitHub — ImportError libEGL.so.1 beim pytest
+- **Release-Build v0.2.0** — scheitert am gleichen Problem + evtl. macOS
+- Windows-Installer wurde nie erfolgreich gebaut
+
+### Nächster konkreter Schritt
+
+1. Codex Task 008 fertig durchlaufen lassen
+2. Wenn gepusht: `gh run list --limit 3` — CI muss grün sein
+3. Falls immer noch rot: weitere apt-Libs nachlegen (siehe Task 008
+   "iterate apt-get list")
+4. Wenn Release-Build grün: Windows-Installer aus GitHub Releases
+   downloaden, auf Windows-Maschine installieren, Smoke-Test machen
+   (siehe TESTING.md "Windows-Installer")
+
+### Blockiert auf User-Aktion
+
+- Windows-Testing — Andre braucht Windows-VM oder physischen PC
+- Echt-Daten-Workflow — Andre muss DWG→DXF konvertieren (CloudConvert),
+  dann TESTING.md "Echt-Daten-Workflow" durchgehen
+- Memory-Limit — Claude (nicht Codex) nähert sich Wochenlimit;
+  Codex übernimmt die nächsten Tage alleine
+
+### Was Codex wissen muss
+
+- **AGENTS.md** lesen vor jeder Session
+- **ROADMAP.md** für Priorisierung
+- **TESTING.md** als Referenz was User testen wird
+- Bei neuen Tasks: CODEX-TASK-NNN-Format, landet im Projektroot
+- Bei echten Problemen die User-Input brauchen: in HANDOFF.md unter
+  "Blockiert auf User-Aktion" vermerken und mit Andre sprechen
+
+### Zuletzt verwendete Kommandos
+
+```bash
+# Standard-Dev-Loop
+cd ~/Workspace/Code/imagerect
+.venv/bin/pre-commit run --all-files
+QT_QPA_PLATFORM=offscreen .venv/bin/pytest -v
+QT_QPA_PLATFORM=offscreen .venv/bin/python main.py --smoke-test
+.venv/bin/python main.py    # GUI-Launch für manuelles Testen
+
+# Git/GitHub
+git status
+gh run list --limit 5
+gh run view <id> --log-failed
+
+# Build
+./scripts/build.sh          # lokaler PyInstaller-Build
+```
+
+### Offene Entscheidungen
+
+Keine. Alles im Scope von Task 008 ist klar beschrieben.
+
+### Letzte Commits
+
+```
+f4e4f68 test: comprehensive coverage + docs for v0.2.0
+0dab6c9 feat: mosaic workflow + GPS pose export
+70ee83c feat: export engine — streaming tiled export for huge images
+bbc2aad feat: export engine — BigTIFF, bit depths, compression
+f237c51 feat: export preview with DXF overlay and quality info
+7542161 feat: project settings panel (scale, DPI, units, output params)
+b3a22a9 feat: lens correction with camera presets + EXIF auto-detect
+70652c6 feat: ROI — image clip polygon + DXF region selection
+fd72947 feat: modifier-click for point placement (Metashape-style)
+8c2642a fix: UX — marker scaling, hide 3D actions in 2D, status hints
+b300a43 fix: restore installer build and export typing (ongoing)
+```
+
+---
+
+## Update-Regeln für diese Datei
+
+- Nach jeder abgeschlossenen Session: "Stand"-Header aktualisieren
+- "Was läuft / ist offen" — ganz knapp (3-5 Zeilen)
+- "Nächster konkreter Schritt" — genau einer, nicht mehrere
+- "Blockiert auf User-Aktion" — nur wenn wirklich blockiert
+- Alte HANDOFF-Stände NICHT löschen, sondern unter `---` nach unten schieben
+  (Archiv/Historie)
