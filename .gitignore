@@ -8,6 +8,7 @@ build/
 .venv/
 *.spec
 .pytest_cache/
+.hypothesis/
 .mypy_cache/
 .ruff_cache/
 .coverage

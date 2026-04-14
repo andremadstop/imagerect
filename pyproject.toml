@@ -26,6 +26,7 @@ dependencies = [
     "trimesh>=4.0",
 ]
 dev = [
+    "hypothesis>=6.0",
     "pytest>=8.0",
     "pytest-qt>=4.3",
     "pytest-cov>=6.0",
