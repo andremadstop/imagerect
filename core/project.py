@@ -53,6 +53,18 @@ def unit_to_mm(units: str) -> float:
     return UNIT_TO_MM.get(units, 1.0)
 
 
+def _copy_control_point(point: ControlPoint) -> ControlPoint:
+    return ControlPoint(
+        id=point.id,
+        label=point.label,
+        image_xy=point.image_xy,
+        reference_xy=point.reference_xy,
+        locked=point.locked,
+        residual=point.residual,
+        residual_vector=point.residual_vector,
+    )
+
+
 @dataclass(slots=True)
 class ControlPoint:
     """A single control point pair row."""
@@ -85,6 +97,19 @@ class ExportSettings:
     clip_to_hull: bool = False
     include_json_sidecar: bool = True
     embed_in_tiff: bool = True
+    mosaic_feather_radius_px: int = 0
+
+
+@dataclass(slots=True)
+class ImageEntry:
+    path: str = ""
+    lens_correction: dict[str, Any] | None = None
+    clip_polygon: list[Point2D] | None = None
+    points: list[ControlPoint] = field(default_factory=list)
+    gps_pose: dict[str, Any] | None = None
+    rms_error: float | None = None
+    transform_matrix: list[list[float]] | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -93,8 +118,11 @@ class ProjectData:
 
     name: str = "Untitled"
     image_path: str = ""
+    images: list[ImageEntry] = field(default_factory=list)
+    active_image_index: int = 0
     reference_path: str = ""
     reference_type: str = "dxf"
+    reference_crs_epsg: int | None = None
     points: list[ControlPoint] = field(default_factory=list)
     export_settings: ExportSettings = field(default_factory=ExportSettings)
     units: str = "mm"
@@ -119,6 +147,7 @@ class ProjectData:
         for point in self.points:
             point.residual = None
             point.residual_vector = None
+        self.sync_to_active_image()
 
     def next_label(self) -> str:
         return f"P{self._next_id:02d}"
@@ -155,9 +184,61 @@ class ProjectData:
         return [point for point in self.points if point.is_paired]
 
     def clone(self) -> ProjectData:
+        self.sync_to_active_image()
         return self.from_dict(self.to_dict())
 
+    def ensure_image_entries(self) -> None:
+        if self.images:
+            self.active_image_index = max(0, min(self.active_image_index, len(self.images) - 1))
+            return
+        if (
+            self.image_path
+            or self.points
+            or self.lens_correction is not None
+            or self.clip_polygon is not None
+        ):
+            self.images = [
+                ImageEntry(
+                    path=self.image_path,
+                    lens_correction=self.lens_correction,
+                    clip_polygon=list(self.clip_polygon) if self.clip_polygon is not None else None,
+                    points=[_copy_control_point(point) for point in self.points],
+                    rms_error=self.rms_error,
+                    transform_matrix=self.transform_matrix,
+                    warnings=list(self.warnings),
+                )
+            ]
+            self.active_image_index = 0
+
+    def sync_to_active_image(self) -> None:
+        self.ensure_image_entries()
+        if not self.images:
+            return
+        entry = self.images[self.active_image_index]
+        entry.path = self.image_path
+        entry.lens_correction = self.lens_correction
+        entry.clip_polygon = list(self.clip_polygon) if self.clip_polygon is not None else None
+        entry.points = [_copy_control_point(point) for point in self.points]
+        entry.rms_error = self.rms_error
+        entry.transform_matrix = self.transform_matrix
+        entry.warnings = list(self.warnings)
+
+    def sync_from_active_image(self) -> None:
+        self.ensure_image_entries()
+        if not self.images:
+            return
+        self.active_image_index = max(0, min(self.active_image_index, len(self.images) - 1))
+        entry = self.images[self.active_image_index]
+        self.image_path = entry.path
+        self.lens_correction = entry.lens_correction
+        self.clip_polygon = list(entry.clip_polygon) if entry.clip_polygon is not None else None
+        self.points = [_copy_control_point(point) for point in entry.points]
+        self.rms_error = entry.rms_error
+        self.transform_matrix = entry.transform_matrix
+        self.warnings = list(entry.warnings)
+
     def to_dict(self) -> dict[str, Any]:
+        self.sync_to_active_image()
         payload = asdict(self)
         payload["_next_id"] = self._next_id
         return payload
@@ -182,12 +263,55 @@ class ProjectData:
                 )
             )
 
+        images: list[ImageEntry] = []
+        for raw_image in payload.get("images", []):
+            image_points: list[ControlPoint] = []
+            for raw_point in raw_image.get("points", []):
+                image_points.append(
+                    ControlPoint(
+                        id=int(raw_point["id"]),
+                        label=str(raw_point.get("label", "")),
+                        image_xy=_coerce_point(raw_point.get("image_xy")),
+                        reference_xy=_coerce_point(raw_point.get("reference_xy")),
+                        locked=bool(raw_point.get("locked", False)),
+                        residual=(
+                            float(raw_point["residual"])
+                            if raw_point.get("residual") is not None
+                            else None
+                        ),
+                        residual_vector=_coerce_point(raw_point.get("residual_vector")),
+                    )
+                )
+            images.append(
+                ImageEntry(
+                    path=str(raw_image.get("path", "")),
+                    lens_correction=raw_image.get("lens_correction"),
+                    clip_polygon=_coerce_point_list(raw_image.get("clip_polygon")),
+                    points=image_points,
+                    gps_pose=raw_image.get("gps_pose"),
+                    rms_error=(
+                        float(raw_image["rms_error"])
+                        if raw_image.get("rms_error") is not None
+                        else None
+                    ),
+                    transform_matrix=raw_image.get("transform_matrix"),
+                    warnings=[str(value) for value in raw_image.get("warnings", [])],
+                )
+            )
+
         export_settings = ExportSettings(**payload.get("export_settings", {}))
         project = cls(
             name=str(payload.get("name", "Untitled")),
             image_path=str(payload.get("image_path", "")),
+            images=images,
+            active_image_index=int(payload.get("active_image_index", 0)),
             reference_path=str(payload.get("reference_path", "")),
             reference_type=str(payload.get("reference_type", "dxf")),
+            reference_crs_epsg=(
+                int(payload["reference_crs_epsg"])
+                if payload.get("reference_crs_epsg") is not None
+                else None
+            ),
             points=points,
             export_settings=export_settings,
             units=str(payload.get("units", "mm")),
@@ -203,11 +327,16 @@ class ProjectData:
             created=str(payload.get("created", _now_iso())),
             modified=str(payload.get("modified", _now_iso())),
         )
+        if project.images:
+            project.sync_from_active_image()
+        else:
+            project.ensure_image_entries()
         project._next_id = int(payload.get("_next_id", max((p.id for p in points), default=0) + 1))
         return project
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.sync_to_active_image()
         self.touch()
         path.write_text(
             json.dumps(self.to_dict(), indent=2, ensure_ascii=False),

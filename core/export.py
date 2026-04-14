@@ -8,6 +8,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -68,6 +69,19 @@ class ExportCancelledError(RuntimeError):
     """Raised when the user cancels a long-running export."""
 
 
+@dataclass(slots=True)
+class MosaicSource:
+    label: str
+    source_image: np.ndarray
+    homography_image_to_reference: np.ndarray
+    control_points: Sequence[ControlPoint]
+    clip_polygon: Sequence[Point2D] | None = None
+    gps_pose: dict[str, Any] | None = None
+    camera_pose: dict[str, Any] | None = None
+    rms_error: float | None = None
+    warnings: Sequence[str] = ()
+
+
 def export_rectified_image(
     source_image: np.ndarray,
     homography_image_to_reference: np.ndarray,
@@ -96,6 +110,8 @@ def export_rectified_image(
     project_name: str = "Untitled",
     rms_error: float | None = None,
     warnings: Sequence[str] | None = None,
+    gps_pose: dict[str, Any] | None = None,
+    camera_pose: dict[str, Any] | None = None,
 ) -> RectificationExportResult:
     """Warp the source image into the metric reference plane and save metadata."""
 
@@ -147,21 +163,13 @@ def export_rectified_image(
         "reference_to_canvas_matrix": plan.reference_to_canvas.tolist(),
         "rms_error": rms_error,
         "warnings": list(warnings or []),
+        "gps_pose": gps_pose,
+        "camera_pose": camera_pose,
         "bigtiff": False,
         "tiled_export": use_tiled_export,
         "clip_polygon": [[float(x), float(y)] for x, y in clip_polygon] if clip_polygon else None,
         "reference_roi": list(reference_roi) if reference_roi is not None else None,
-        "point_pairs": [
-            {
-                "id": point.id,
-                "label": point.label,
-                "image_xy": list(point.image_xy) if point.image_xy else None,
-                "reference_xy": list(point.reference_xy) if point.reference_xy else None,
-                "residual": point.residual,
-                "residual_vector": list(point.residual_vector) if point.residual_vector else None,
-            }
-            for point in control_points
-        ],
+        "point_pairs": _point_pairs_metadata(control_points),
     }
     try:
         _write_output_image(
@@ -231,6 +239,262 @@ def render_rectified_image(
         reference_extents=reference_extents,
     )
     return _render_plan(plan, control_points, clip_to_hull)
+
+
+def render_mosaic_image(
+    sources: Sequence[MosaicSource],
+    pixel_size: float,
+    units: str,
+    bit_depth: int = 8,
+    resampling: str = "bilinear",
+    clip_to_hull: bool = False,
+    reference_roi: tuple[float, float, float, float] | None = None,
+    reference_extents: tuple[Point2D, Point2D] | None = None,
+    blend_radius_px: int = 0,
+) -> RectifiedImageRenderResult:
+    """Render multiple rectified images into one shared mosaic canvas."""
+
+    if not sources:
+        raise ValueError("At least one mosaic source is required")
+
+    if reference_roi is not None:
+        bounds = _roi_bounds(reference_roi)
+    else:
+        bounds = reference_extents or _bounds_from_points(
+            point.reference_xy for source in sources for point in source.control_points
+        )
+    rendered_layers = [
+        render_rectified_image(
+            source_image=source.source_image,
+            homography_image_to_reference=source.homography_image_to_reference,
+            control_points=source.control_points,
+            pixel_size=pixel_size,
+            units=units,
+            bit_depth=bit_depth,
+            resampling=resampling,
+            clip_to_hull=clip_to_hull,
+            clip_polygon=source.clip_polygon,
+            reference_extents=bounds,
+        )
+        for source in sources
+    ]
+    mosaic = rendered_layers[0].image.copy()
+    for layer in rendered_layers[1:]:
+        mosaic = _composite_mosaic(mosaic, layer.image, blend_radius_px)
+
+    first = rendered_layers[0]
+    return RectifiedImageRenderResult(
+        image=mosaic,
+        width=first.width,
+        height=first.height,
+        pixel_size=first.pixel_size,
+        pixel_size_reference_units=first.pixel_size_reference_units,
+        bounds_min=first.bounds_min,
+        bounds_max=first.bounds_max,
+        reference_to_canvas=first.reference_to_canvas,
+    )
+
+
+def export_mosaic_image(
+    sources: Sequence[MosaicSource],
+    output_path: str | Path,
+    pixel_size: float,
+    units: str,
+    output_format: str = "tiff",
+    dpi: float = 300.0,
+    bit_depth: int = 8,
+    resampling: str = "bilinear",
+    compression: str = "none",
+    clip_to_hull: bool = False,
+    reference_roi: tuple[float, float, float, float] | None = None,
+    write_metadata_json: bool = True,
+    embed_in_tiff: bool = True,
+    bigtiff_threshold_bytes: int = 4 * 1024**3,
+    multi_layer: bool = False,
+    reference_segments: Sequence[tuple[Point2D, Point2D]] | None = None,
+    reference_extents: tuple[Point2D, Point2D] | None = None,
+    project_name: str = "Untitled",
+    warnings: Sequence[str] | None = None,
+    blend_radius_px: int = 0,
+) -> RectificationExportResult:
+    """Export a composed mosaic of multiple rectified images."""
+
+    rendered = render_mosaic_image(
+        sources=sources,
+        pixel_size=pixel_size,
+        units=units,
+        bit_depth=bit_depth,
+        resampling=resampling,
+        clip_to_hull=clip_to_hull,
+        reference_roi=reference_roi,
+        reference_extents=reference_extents,
+        blend_radius_px=blend_radius_px,
+    )
+    target_path = Path(output_path)
+    if output_format == "png":
+        image_path = target_path.with_suffix(".png")
+    elif output_format == "jpeg":
+        image_path = target_path.with_suffix(".jpg")
+    else:
+        image_path = target_path.with_suffix(".tiff")
+    metadata_path = target_path.with_suffix(".json")
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+
+    all_control_points = [point for source in sources for point in source.control_points]
+    clip_mask_present = any(source.clip_polygon for source in sources)
+    metadata = {
+        "project_name": project_name,
+        "timestamp": datetime.now(UTC).replace(microsecond=0).isoformat(),
+        "units": units,
+        "pixel_size": pixel_size,
+        "pixel_size_reference_units": rendered.pixel_size_reference_units,
+        "output_format": output_format,
+        "dpi": dpi,
+        "bit_depth": bit_depth,
+        "compression": compression,
+        "reference_to_canvas_matrix": rendered.reference_to_canvas.tolist(),
+        "canvas": {
+            "width": rendered.width,
+            "height": rendered.height,
+            "bounds_min": [float(rendered.bounds_min[0]), float(rendered.bounds_min[1])],
+            "bounds_max": [float(rendered.bounds_max[0]), float(rendered.bounds_max[1])],
+        },
+        "warnings": list(warnings or []),
+        "reference_roi": list(reference_roi) if reference_roi is not None else None,
+        "point_pairs": _point_pairs_metadata(all_control_points),
+        "gps_pose": sources[0].gps_pose if len(sources) == 1 else None,
+        "camera_pose": sources[0].camera_pose if len(sources) == 1 else None,
+        "bigtiff": False,
+        "tiled_export": False,
+        "mosaic": {
+            "source_count": len(sources),
+            "blend_radius_px": blend_radius_px,
+            "sources": [
+                {
+                    "label": source.label,
+                    "transform_matrix": source.homography_image_to_reference.tolist(),
+                    "point_pairs": _point_pairs_metadata(source.control_points),
+                    "rms_error": source.rms_error,
+                    "warnings": list(source.warnings),
+                    "gps_pose": source.gps_pose,
+                    "camera_pose": source.camera_pose,
+                }
+                for source in sources
+            ],
+        },
+    }
+
+    if output_format in {"tiff", "bigtiff"}:
+        estimated_size = estimate_output_size_bytes(
+            rendered.width,
+            rendered.height,
+            bit_depth,
+            layer_count=4 if multi_layer else 1,
+        )
+        use_bigtiff = output_format == "bigtiff" or estimated_size > bigtiff_threshold_bytes
+        metadata["bigtiff"] = use_bigtiff
+        if multi_layer:
+            page_descriptions = _layer_descriptions(
+                metadata,
+                True,
+                reference_segments,
+                clip_mask_present,
+            )
+            pages = [
+                TiffPageSpec(
+                    data=rendered.image,
+                    shape=rendered.image.shape,
+                    dtype=rendered.image.dtype,
+                    description=page_descriptions[0] if embed_in_tiff else None,
+                    photometric=_photometric(rendered.image),
+                )
+            ]
+            page_index = 1
+            if reference_segments:
+                overlay_image = _render_reference_overlay_canvas(
+                    rendered.height,
+                    rendered.width,
+                    rendered.reference_to_canvas,
+                    reference_segments,
+                )
+                pages.append(
+                    TiffPageSpec(
+                        data=overlay_image,
+                        shape=overlay_image.shape,
+                        dtype=overlay_image.dtype,
+                        description=page_descriptions[page_index] if embed_in_tiff else None,
+                        photometric="rgb",
+                    )
+                )
+                page_index += 1
+            points_image = _render_control_point_overlay_canvas(
+                rendered.height,
+                rendered.width,
+                rendered.reference_to_canvas,
+                all_control_points,
+            )
+            pages.append(
+                TiffPageSpec(
+                    data=points_image,
+                    shape=points_image.shape,
+                    dtype=points_image.dtype,
+                    description=page_descriptions[page_index] if embed_in_tiff else None,
+                    photometric="rgb",
+                )
+            )
+            page_index += 1
+            if clip_mask_present:
+                mask_image = _render_mosaic_clip_mask(
+                    rendered.height,
+                    rendered.width,
+                    rendered.reference_to_canvas,
+                    sources,
+                )
+                pages.append(
+                    TiffPageSpec(
+                        data=mask_image,
+                        shape=mask_image.shape,
+                        dtype=mask_image.dtype,
+                        description=page_descriptions[page_index] if embed_in_tiff else None,
+                    )
+                )
+            write_tiff_pages(
+                image_path,
+                pages,
+                dpi=dpi,
+                compression=compression,
+                bigtiff=use_bigtiff,
+            )
+        else:
+            write_tiff_image(
+                image_path,
+                rendered.image,
+                dpi=dpi,
+                compression=compression,
+                metadata=metadata,
+                bigtiff=use_bigtiff,
+                embed_metadata=embed_in_tiff,
+            )
+    elif output_format == "png":
+        write_png_image(image_path, rendered.image)
+    elif output_format == "jpeg":
+        write_jpeg_image(image_path, rendered.image)
+    else:
+        raise ValueError(f"Unsupported export format: {output_format}")
+
+    if write_metadata_json:
+        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+    return RectificationExportResult(
+        image_path=image_path,
+        metadata_path=metadata_path,
+        width=rendered.width,
+        height=rendered.height,
+        pixel_size=pixel_size,
+        bounds_min=rendered.bounds_min,
+        bounds_max=rendered.bounds_max,
+    )
 
 
 def build_canvas(
@@ -457,6 +721,55 @@ def _render_plan(
     )
 
 
+def _composite_mosaic(
+    base_image: np.ndarray,
+    new_image: np.ndarray,
+    blend_radius_px: int,
+) -> np.ndarray:
+    new_mask = _nonzero_mask(new_image)
+    if not np.any(new_mask):
+        return base_image
+
+    composite = base_image.copy()
+    if blend_radius_px <= 0:
+        composite[new_mask] = new_image[new_mask]
+        return composite
+
+    base_mask = _nonzero_mask(base_image)
+    if not np.any(base_mask):
+        composite[new_mask] = new_image[new_mask]
+        return composite
+
+    overlap = base_mask & new_mask
+    if not np.any(overlap):
+        composite[new_mask] = new_image[new_mask]
+        return composite
+
+    base_distance = cv2.distanceTransform(base_mask.astype(np.uint8), cv2.DIST_L2, 3)
+    new_distance = cv2.distanceTransform(new_mask.astype(np.uint8), cv2.DIST_L2, 3)
+    base_weight = np.clip(base_distance / max(float(blend_radius_px), 1.0), 0.0, 1.0)
+    new_weight = np.clip(new_distance / max(float(blend_radius_px), 1.0), 0.0, 1.0)
+
+    total_weight = base_weight + new_weight
+    total_weight[total_weight == 0.0] = 1.0
+
+    base_float = base_image.astype(np.float32)
+    new_float = new_image.astype(np.float32)
+    if base_image.ndim == 2:
+        blended = (base_float * base_weight + new_float * new_weight) / total_weight
+        composite = np.where(new_mask, new_float, base_float)
+        composite[overlap] = blended[overlap]
+    else:
+        base_weight_rgb = base_weight[:, :, None]
+        new_weight_rgb = new_weight[:, :, None]
+        total_weight_rgb = total_weight[:, :, None]
+        blended = (base_float * base_weight_rgb + new_float * new_weight_rgb) / total_weight_rgb
+        composite = np.where(new_mask[:, :, None], new_float, base_float)
+        composite[overlap] = blended[overlap]
+
+    return composite.astype(base_image.dtype)
+
+
 def _write_tiff_export(
     *,
     image_path: Path,
@@ -478,7 +791,12 @@ def _write_tiff_export(
     use_tiled_export: bool,
 ) -> None:
     pages: list[TiffPageSpec] = []
-    page_descriptions = _layer_descriptions(metadata, multi_layer, reference_segments, clip_polygon)
+    page_descriptions = _layer_descriptions(
+        metadata,
+        multi_layer,
+        reference_segments,
+        clip_polygon is not None,
+    )
 
     if use_tiled_export:
         page_count = len(page_descriptions)
@@ -663,9 +981,12 @@ def _render_reference_overlay_image(
     plan: RectifiedImageRenderPlan,
     reference_segments: Sequence[tuple[Point2D, Point2D]],
 ) -> np.ndarray:
-    canvas = np.zeros((plan.height, plan.width, 3), dtype=np.uint8)
-    _draw_reference_segments(canvas, reference_segments, plan.reference_to_canvas)
-    return canvas
+    return _render_reference_overlay_canvas(
+        plan.height,
+        plan.width,
+        plan.reference_to_canvas,
+        reference_segments,
+    )
 
 
 def _render_reference_overlay_tile(
@@ -688,9 +1009,12 @@ def _render_control_point_overlay_image(
     plan: RectifiedImageRenderPlan,
     control_points: Sequence[ControlPoint],
 ) -> np.ndarray:
-    canvas = np.zeros((plan.height, plan.width, 3), dtype=np.uint8)
-    _draw_control_points(canvas, control_points, plan.reference_to_canvas)
-    return canvas
+    return _render_control_point_overlay_canvas(
+        plan.height,
+        plan.width,
+        plan.reference_to_canvas,
+        control_points,
+    )
 
 
 def _render_control_point_tile(
@@ -713,13 +1037,12 @@ def _render_clip_mask_image(
     plan: RectifiedImageRenderPlan,
     clip_polygon: Sequence[Point2D],
 ) -> np.ndarray:
-    mask = np.zeros((plan.height, plan.width), dtype=np.uint8)
-    projected = cv2.perspectiveTransform(
-        np.asarray(clip_polygon, dtype=np.float32).reshape(-1, 1, 2),
-        plan.transform_to_canvas.astype(np.float32),
-    ).reshape(-1, 2)
-    cv2.fillPoly(mask, [np.round(projected).astype(np.int32)], 255)
-    return mask
+    return _render_projected_polygon_mask(
+        plan.height,
+        plan.width,
+        plan.transform_to_canvas,
+        clip_polygon,
+    )
 
 
 def _render_clip_mask_tile(
@@ -830,7 +1153,7 @@ def _layer_descriptions(
     metadata: dict[str, object],
     multi_layer: bool,
     reference_segments: Sequence[tuple[Point2D, Point2D]] | None,
-    clip_polygon: Sequence[Point2D] | None,
+    clip_mask_present: bool,
 ) -> list[str]:
     pages = [
         {**metadata, "layer_name": "rectified_image"},
@@ -839,7 +1162,7 @@ def _layer_descriptions(
         if reference_segments:
             pages.append({"layer_name": "dxf_overlay"})
         pages.append({"layer_name": "control_points"})
-        if clip_polygon:
+        if clip_mask_present:
             pages.append({"layer_name": "clip_mask"})
     return [json.dumps(page, indent=2) for page in pages]
 
@@ -919,3 +1242,82 @@ def _bounds_from_points(points: Iterable[Point2D | None]) -> tuple[Point2D, Poin
     xs = [point[0] for point in valid_points]
     ys = [point[1] for point in valid_points]
     return (min(xs), min(ys)), (max(xs), max(ys))
+
+
+def _nonzero_mask(image: np.ndarray) -> np.ndarray:
+    if image.ndim == 2:
+        return image > 0
+    return np.any(image != 0, axis=2)
+
+
+def _point_pairs_metadata(control_points: Sequence[ControlPoint]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": point.id,
+            "label": point.label,
+            "image_xy": list(point.image_xy) if point.image_xy else None,
+            "reference_xy": list(point.reference_xy) if point.reference_xy else None,
+            "residual": point.residual,
+            "residual_vector": list(point.residual_vector) if point.residual_vector else None,
+        }
+        for point in control_points
+    ]
+
+
+def _render_reference_overlay_canvas(
+    height: int,
+    width: int,
+    reference_to_canvas: np.ndarray,
+    reference_segments: Sequence[tuple[Point2D, Point2D]],
+) -> np.ndarray:
+    canvas = np.zeros((height, width, 3), dtype=np.uint8)
+    _draw_reference_segments(canvas, reference_segments, reference_to_canvas)
+    return canvas
+
+
+def _render_control_point_overlay_canvas(
+    height: int,
+    width: int,
+    reference_to_canvas: np.ndarray,
+    control_points: Sequence[ControlPoint],
+) -> np.ndarray:
+    canvas = np.zeros((height, width, 3), dtype=np.uint8)
+    _draw_control_points(canvas, control_points, reference_to_canvas)
+    return canvas
+
+
+def _render_projected_polygon_mask(
+    height: int,
+    width: int,
+    transform_to_canvas: np.ndarray,
+    polygon: Sequence[Point2D],
+) -> np.ndarray:
+    mask = np.zeros((height, width), dtype=np.uint8)
+    if len(polygon) < 3:
+        return mask
+    projected = cv2.perspectiveTransform(
+        np.asarray(polygon, dtype=np.float32).reshape(-1, 1, 2),
+        transform_to_canvas.astype(np.float32),
+    ).reshape(-1, 2)
+    cv2.fillPoly(mask, [np.round(projected).astype(np.int32)], 255)
+    return mask
+
+
+def _render_mosaic_clip_mask(
+    height: int,
+    width: int,
+    reference_to_canvas: np.ndarray,
+    sources: Sequence[MosaicSource],
+) -> np.ndarray:
+    mask = np.zeros((height, width), dtype=np.uint8)
+    for source in sources:
+        if not source.clip_polygon:
+            continue
+        projected_mask = _render_projected_polygon_mask(
+            height,
+            width,
+            reference_to_canvas @ source.homography_image_to_reference,
+            source.clip_polygon,
+        )
+        mask = np.maximum(mask, projected_mask)
+    return mask

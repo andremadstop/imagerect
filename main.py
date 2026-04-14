@@ -16,6 +16,13 @@ from ui.theme import apply_theme
 
 
 def main(argv: list[str] | None = None) -> int:
+    if (
+        os.environ.get("QT_QPA_PLATFORM") is None
+        and os.environ.get("DISPLAY") is None
+        and os.environ.get("WAYLAND_DISPLAY") is None
+    ):
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
     parser = argparse.ArgumentParser(description="ImageRect Phase-2 MVP")
     parser.add_argument("--project", type=Path, help="Open a saved .imagerect.json project")
     parser.add_argument("--image", type=Path, help="Open an image on startup")

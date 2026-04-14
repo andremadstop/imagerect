@@ -25,9 +25,11 @@ from PySide6.QtWidgets import (
 )
 
 from core.export import (
+    MosaicSource,
     RectifiedImageRenderResult,
     build_canvas,
     estimate_output_size_bytes,
+    render_mosaic_image,
     render_rectified_image,
 )
 from core.image import image_to_rgb
@@ -41,19 +43,20 @@ class PreviewDialog(QDialog):
 
     def __init__(
         self,
-        source_image: np.ndarray,
-        homography_image_to_reference: np.ndarray,
-        control_points: Sequence[ControlPoint],
-        total_point_count: int,
         export_settings: ExportSettings,
         units: str,
         project_name: str,
-        rms_error: float | None,
-        warnings: Sequence[str],
+        total_point_count: int,
         reference_extents: tuple[Point2D, Point2D],
+        source_image: np.ndarray | None = None,
+        homography_image_to_reference: np.ndarray | None = None,
+        control_points: Sequence[ControlPoint] | None = None,
+        rms_error: float | None = None,
+        warnings: Sequence[str] = (),
         reference_2d: Reference2D | None = None,
         clip_polygon: Sequence[Point2D] | None = None,
         reference_roi: ReferenceRoi | None = None,
+        mosaic_sources: Sequence[MosaicSource] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -72,11 +75,11 @@ class PreviewDialog(QDialog):
         self._rms_error = rms_error
         self._warnings = list(warnings)
         self._reference_2d = reference_2d
-        self._control_points = list(control_points)
         self._total_point_count = total_point_count
-        self._clip_polygon = list(clip_polygon) if clip_polygon else None
         self._reference_roi = reference_roi
-        self._homography = homography_image_to_reference
+        self._mosaic_source_count = len(mosaic_sources or [])
+        self._control_points: list[ControlPoint] = []
+        self._clip_overlays: list[tuple[list[Point2D], np.ndarray]] = []
         self._actual_bounds = (
             _roi_bounds(reference_roi)
             if export_settings.use_reference_roi and reference_roi is not None
@@ -92,19 +95,45 @@ class PreviewDialog(QDialog):
             units,
             self._actual_bounds,
         )
-        self._rendered_preview = render_rectified_image(
-            source_image=source_image,
-            homography_image_to_reference=homography_image_to_reference,
-            control_points=control_points,
-            pixel_size=preview_pixel_size,
-            units=units,
-            bit_depth=export_settings.bit_depth,
-            resampling=export_settings.resampling,
-            clip_to_hull=export_settings.clip_to_hull,
-            clip_polygon=clip_polygon if export_settings.use_clip_polygon else None,
-            reference_roi=reference_roi if export_settings.use_reference_roi else None,
-            reference_extents=reference_extents,
-        )
+        if mosaic_sources:
+            self._control_points = [
+                point for source in mosaic_sources for point in source.control_points
+            ]
+            self._clip_overlays = [
+                (list(source.clip_polygon), source.homography_image_to_reference)
+                for source in mosaic_sources
+                if source.clip_polygon
+            ]
+            self._rendered_preview = render_mosaic_image(
+                sources=mosaic_sources,
+                pixel_size=preview_pixel_size,
+                units=units,
+                bit_depth=export_settings.bit_depth,
+                resampling=export_settings.resampling,
+                clip_to_hull=export_settings.clip_to_hull,
+                reference_roi=reference_roi if export_settings.use_reference_roi else None,
+                reference_extents=reference_extents,
+                blend_radius_px=export_settings.mosaic_feather_radius_px,
+            )
+        else:
+            if source_image is None or homography_image_to_reference is None:
+                raise ValueError("Single-image preview requires image data and a homography.")
+            self._control_points = list(control_points or [])
+            if clip_polygon is not None:
+                self._clip_overlays = [(list(clip_polygon), homography_image_to_reference)]
+            self._rendered_preview = render_rectified_image(
+                source_image=source_image,
+                homography_image_to_reference=homography_image_to_reference,
+                control_points=self._control_points,
+                pixel_size=preview_pixel_size,
+                units=units,
+                bit_depth=export_settings.bit_depth,
+                resampling=export_settings.resampling,
+                clip_to_hull=export_settings.clip_to_hull,
+                clip_polygon=clip_polygon if export_settings.use_clip_polygon else None,
+                reference_roi=reference_roi if export_settings.use_reference_roi else None,
+                reference_extents=reference_extents,
+            )
 
         self.preview_label = QLabel()
         self.preview_label.setAlignment(Qt.AlignCenter)
@@ -122,8 +151,8 @@ class PreviewDialog(QDialog):
         self.overlay_points = QCheckBox("Control points")
         self.overlay_points.setChecked(True)
         self.overlay_clip_polygon = QCheckBox("Clip polygon")
-        self.overlay_clip_polygon.setChecked(self._clip_polygon is not None)
-        self.overlay_clip_polygon.setEnabled(self._clip_polygon is not None)
+        self.overlay_clip_polygon.setChecked(bool(self._clip_overlays))
+        self.overlay_clip_polygon.setEnabled(bool(self._clip_overlays))
         self.overlay_reference_roi = QCheckBox("DXF ROI")
         self.overlay_reference_roi.setChecked(reference_roi is not None)
         self.overlay_reference_roi.setEnabled(reference_roi is not None)
@@ -158,8 +187,14 @@ class PreviewDialog(QDialog):
         info_form.addRow("RMS error", QLabel(_rms_summary(rms_error, units)))
         info_form.addRow(
             "Point count",
-            QLabel(f"{len(control_points)} / {total_point_count} paired"),
+            QLabel(f"{len(self._control_points)} / {total_point_count} paired"),
         )
+        if self._mosaic_source_count > 1:
+            info_form.addRow("Sources", QLabel(str(self._mosaic_source_count)))
+            info_form.addRow(
+                "Feather blend",
+                QLabel(f"{export_settings.mosaic_feather_radius_px} px"),
+            )
         warnings_label = QLabel("\n".join(self._warnings) if self._warnings else "none")
         warnings_label.setWordWrap(True)
         warnings_label.setStyleSheet(f"color: {WARNING};")
@@ -216,13 +251,14 @@ class PreviewDialog(QDialog):
             _draw_reference_overlay(preview, self._reference_2d, self._rendered_preview)
         if self.overlay_points.isChecked():
             _draw_point_overlay(preview, self._control_points, self._rendered_preview)
-        if self.overlay_clip_polygon.isChecked() and self._clip_polygon is not None:
-            _draw_clip_polygon_overlay(
-                preview,
-                self._clip_polygon,
-                self._homography,
-                self._rendered_preview,
-            )
+        if self.overlay_clip_polygon.isChecked():
+            for polygon, homography in self._clip_overlays:
+                _draw_clip_polygon_overlay(
+                    preview,
+                    polygon,
+                    homography,
+                    self._rendered_preview,
+                )
         if self.overlay_reference_roi.isChecked() and self._reference_roi is not None:
             _draw_reference_roi_overlay(preview, self._reference_roi, self._rendered_preview)
         self.preview_label.setPixmap(_pixmap_from_rgb(preview))
@@ -247,7 +283,7 @@ def _format_summary(settings: ExportSettings) -> str:
 
 
 def _estimate_summary(width: int, height: int, settings: ExportSettings) -> str:
-    layer_count = 3 if settings.multi_layer else 1
+    layer_count = 4 if settings.multi_layer else 1
     size = estimate_output_size_bytes(width, height, settings.bit_depth, layer_count=layer_count)
     return _format_bytes(size)
 

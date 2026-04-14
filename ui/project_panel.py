@@ -12,13 +12,15 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from core.export import build_canvas, estimate_output_size_bytes
-from core.project import ExportSettings, Point2D, ProjectData, unit_to_mm
+from core.project import ExportSettings, ImageEntry, Point2D, ProjectData, unit_to_mm
 from ui.theme import ERROR, TEXT_BRIGHT, TEXT_DIM, WARNING
 
 SCALE_PRESETS = [50.0, 100.0, 200.0, 500.0, 1000.0]
@@ -33,6 +35,7 @@ FORMAT_OPTIONS = [
 class ProjectPanel(QWidget):
     """Persistent project/output settings editor."""
 
+    active_image_changed = Signal(int)
     project_name_changed = Signal(str)
     units_changed = Signal(str)
     export_settings_changed = Signal(object)
@@ -45,6 +48,7 @@ class ProjectPanel(QWidget):
         self._has_reference_roi = False
 
         self.project_name = QLineEdit()
+        self.image_list = QListWidget()
         self.units = QComboBox()
         self.units.addItems(["mm", "cm", "m", "in", "ft"])
 
@@ -56,6 +60,7 @@ class ProjectPanel(QWidget):
 
         self.pixel_size = _build_spinbox(0.0001, 1000000.0, 4)
         self.dpi = _build_spinbox(1.0, 2400.0, 2)
+        self.mosaic_feather_radius = _build_spinbox(0.0, 4096.0, 0)
 
         self.output_format = QComboBox()
         for label, format_value in FORMAT_OPTIONS:
@@ -81,6 +86,7 @@ class ProjectPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(12)
+        layout.addWidget(self._build_images_group())
         layout.addWidget(self._build_project_group())
         layout.addWidget(self._build_scale_group())
         layout.addWidget(self._build_output_group())
@@ -96,6 +102,7 @@ class ProjectPanel(QWidget):
         self._updating = True
         try:
             self.project_name.setText(project.name)
+            self._populate_images(project.images, project.active_image_index)
             self.units.setCurrentText(project.units)
 
             settings = project.export_settings
@@ -109,6 +116,7 @@ class ProjectPanel(QWidget):
             self._set_bit_depth(settings.bit_depth)
             self._set_compression(settings.compression)
             self.resampling.setCurrentText(settings.resampling)
+            self.mosaic_feather_radius.setValue(settings.mosaic_feather_radius_px)
             self.multi_layer.setChecked(settings.multi_layer)
             self.use_clip_polygon.setChecked(settings.use_clip_polygon)
             self.use_reference_roi.setChecked(settings.use_reference_roi)
@@ -143,6 +151,7 @@ class ProjectPanel(QWidget):
             output_format=str(self.output_format.currentData()),
             bit_depth=int(self.bit_depth.currentText()),
             compression=self.compression.currentText().lower(),
+            mosaic_feather_radius_px=int(self.mosaic_feather_radius.value()),
             multi_layer=self.multi_layer.isChecked(),
             use_clip_polygon=self.use_clip_polygon.isChecked(),
             use_reference_roi=self.use_reference_roi.isChecked(),
@@ -158,6 +167,14 @@ class ProjectPanel(QWidget):
         form.setSpacing(10)
         form.addRow("Project name", self.project_name)
         form.addRow("Units", self.units)
+        return group
+
+    def _build_images_group(self) -> QGroupBox:
+        group = QGroupBox("Images")
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(12, 16, 12, 12)
+        layout.setSpacing(10)
+        layout.addWidget(self.image_list)
         return group
 
     def _build_scale_group(self) -> QGroupBox:
@@ -189,6 +206,7 @@ class ProjectPanel(QWidget):
         form.addRow("Bit depth", self.bit_depth)
         form.addRow("Resampling", self.resampling)
         form.addRow("Compression", self.compression)
+        form.addRow("Mosaic feather (px)", self.mosaic_feather_radius)
         form.addRow("", self.multi_layer)
         return group
 
@@ -212,6 +230,7 @@ class ProjectPanel(QWidget):
         return group
 
     def _connect_signals(self) -> None:
+        self.image_list.currentRowChanged.connect(self._handle_active_image_changed)
         self.project_name.editingFinished.connect(self._emit_project_name)
         self.units.currentTextChanged.connect(self._handle_units_changed)
 
@@ -227,6 +246,8 @@ class ProjectPanel(QWidget):
         self.bit_depth.currentIndexChanged.connect(self._emit_export_settings)
         self.compression.currentIndexChanged.connect(self._emit_export_settings)
         self.resampling.currentIndexChanged.connect(self._emit_export_settings)
+        self.mosaic_feather_radius.valueChanged.connect(self._emit_export_settings)
+        self.mosaic_feather_radius.editingFinished.connect(self._emit_export_settings)
         self.multi_layer.toggled.connect(self._emit_export_settings)
         self.use_clip_polygon.toggled.connect(self._emit_export_settings)
         self.use_reference_roi.toggled.connect(self._emit_export_settings)
@@ -237,6 +258,10 @@ class ProjectPanel(QWidget):
     def _emit_project_name(self) -> None:
         if not self._updating:
             self.project_name_changed.emit(self.project_name.text().strip() or "Untitled")
+
+    def _handle_active_image_changed(self, index: int) -> None:
+        if not self._updating and index >= 0:
+            self.active_image_changed.emit(index)
 
     def _handle_units_changed(self, units: str) -> None:
         self._update_canvas_estimate()
@@ -349,7 +374,7 @@ class ProjectPanel(QWidget):
             pixel_size_units,
         )
         layer_count = (
-            3
+            4
             if self.multi_layer.isChecked()
             and str(self.output_format.currentData()) in {"tiff", "bigtiff"}
             else 1
@@ -415,6 +440,16 @@ class ProjectPanel(QWidget):
             combo.setCurrentText(current)
         finally:
             combo.blockSignals(False)
+
+    def _populate_images(self, images: list[ImageEntry], active_index: int) -> None:
+        self.image_list.clear()
+        for index, entry in enumerate(images):
+            label = entry.path.rsplit("/", maxsplit=1)[-1] if entry.path else f"Image {index + 1}"
+            item = QListWidgetItem(label)
+            item.setToolTip(entry.path or label)
+            self.image_list.addItem(item)
+        if images:
+            self.image_list.setCurrentRow(max(0, min(active_index, len(images) - 1)))
 
 
 def _build_spinbox(minimum: float, maximum: float, decimals: int) -> QDoubleSpinBox:

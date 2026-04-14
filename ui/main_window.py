@@ -29,10 +29,25 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.export import ExportCancelledError, RectificationExportResult, export_rectified_image
+from core.export import (
+    ExportCancelledError,
+    MosaicSource,
+    RectificationExportResult,
+    export_mosaic_image,
+    export_rectified_image,
+)
 from core.image import load_image
 from core.lens import LensProfile, apply_lens_correction, lens_profile_from_dict
-from core.project import ControlPoint, ExportSettings, Point2D, ProjectData, ReferenceRoi
+from core.pose import build_camera_pose, extract_gps_pose, gps_offset_meters, gps_to_reference_xy
+from core.project import (
+    ControlPoint,
+    ExportSettings,
+    ImageEntry,
+    Point2D,
+    ProjectData,
+    ReferenceRoi,
+    unit_to_mm,
+)
 from core.reference2d import Reference2D, load_dxf
 from core.reference3d import (
     Reference3D,
@@ -95,10 +110,14 @@ class MainWindow(QMainWindow):
 
     def load_image_file(self, path: str | Path) -> None:
         image_path = Path(path)
+        self.project.sync_to_active_image()
+        self._activate_or_create_image(image_path)
         self.source_image_original = load_image(image_path)
-        self.project.lens_correction = None
+        if self.project.images:
+            self.project.images[self.project.active_image_index].gps_pose = extract_gps_pose(
+                image_path
+            )
         self._refresh_source_image()
-        self.project.image_path = str(image_path)
         if self.project.name == "Untitled":
             self.project.name = image_path.stem
         self._record_history()
@@ -114,6 +133,7 @@ class MainWindow(QMainWindow):
         self.reference_world_points = {}
         self.project.reference_path = str(reference_path)
         self.project.reference_type = "dxf"
+        self.project.reference_crs_epsg = self.reference_2d.crs_epsg
         self.project.units = self.reference_2d.units
         self.project.working_plane = None
         self.project.reference_roi = None
@@ -140,6 +160,7 @@ class MainWindow(QMainWindow):
         self.plane_pick_mode = False
         self.project.reference_path = str(reference_path)
         self.project.reference_type = reference.source_type
+        self.project.reference_crs_epsg = None
         self.project.units = reference.units
         self.project.working_plane = None
         self.project.reference_roi = None
@@ -149,6 +170,7 @@ class MainWindow(QMainWindow):
     def load_project_file(self, path: str | Path) -> None:
         project_path = Path(path)
         self.project = ProjectData.load(project_path)
+        self.project.sync_from_active_image()
         self.project_path = project_path
         self.selected_point_id = None
         self.reference_world_points = {}
@@ -187,12 +209,9 @@ class MainWindow(QMainWindow):
             self.save_project_file(file_name)
 
     def run_export(self) -> RectificationExportResult | None:
-        if self.source_image is None:
-            raise ValueError("Load an image before exporting.")
-        if self.transform_result is None or self.project.transform_matrix is None:
-            raise ValueError("At least four valid point pairs are required before export.")
-
+        self.project.sync_to_active_image()
         settings = self.project.export_settings
+        sources, export_warnings = self._collect_export_sources()
         reference_extents = self._current_reference_extents()
         default_path = Path.cwd() / f"{self.project.name}_rectified"
         file_name, _ = QFileDialog.getSaveFileName(
@@ -204,36 +223,18 @@ class MainWindow(QMainWindow):
         if not file_name:
             return None
 
-        progress_dialog = QProgressDialog("Preparing export...", "Cancel", 0, 1, self)
-        progress_dialog.setWindowTitle("Exporting")
-        progress_dialog.setWindowModality(Qt.WindowModal)
-        progress_dialog.setMinimumDuration(0)
-        progress_dialog.setValue(0)
-
         reference_segments = None
         if self.reference_2d is not None:
             reference_segments = [
                 (segment.start, segment.end) for segment in self.reference_2d.segments
             ]
 
-        def _progress_callback(current: int, total: int, message: str) -> None:
-            progress_dialog.setMaximum(max(total, 1))
-            progress_dialog.setValue(min(current, max(total, 1)))
-            progress_dialog.setLabelText(message)
-            QApplication.processEvents()
+        source = sources[0]
+        combined_warnings = list(dict.fromkeys([*export_warnings, *source.warnings]))
 
-        def _cancel_checker() -> bool:
-            QApplication.processEvents()
-            return bool(progress_dialog.wasCanceled())
-
-        try:
-            result = export_rectified_image(
-                source_image=self.source_image,
-                homography_image_to_reference=np.asarray(
-                    self.project.transform_matrix,
-                    dtype=np.float64,
-                ),
-                control_points=self.project.paired_points(),
+        if len(sources) > 1:
+            result = export_mosaic_image(
+                sources=sources,
                 output_path=file_name,
                 pixel_size=settings.pixel_size,
                 units=self.project.units,
@@ -243,25 +244,71 @@ class MainWindow(QMainWindow):
                 resampling=settings.resampling,
                 compression=settings.compression,
                 clip_to_hull=settings.clip_to_hull,
-                clip_polygon=self.project.clip_polygon if settings.use_clip_polygon else None,
                 reference_roi=self.project.reference_roi if settings.use_reference_roi else None,
                 write_metadata_json=settings.include_json_sidecar,
                 embed_in_tiff=settings.embed_in_tiff,
+                bigtiff_threshold_bytes=4 * 1024**3,
                 multi_layer=settings.multi_layer,
                 reference_segments=reference_segments,
-                progress_callback=_progress_callback,
-                cancel_checker=_cancel_checker,
                 reference_extents=reference_extents,
                 project_name=self.project.name,
-                rms_error=self.project.rms_error,
-                warnings=self.project.warnings,
+                warnings=export_warnings,
+                blend_radius_px=settings.mosaic_feather_radius_px,
             )
-        except ExportCancelledError:
-            progress_dialog.cancel()
-            self.statusBar().showMessage("Export cancelled", 5000)
-            return None
-        finally:
-            progress_dialog.close()
+        else:
+            progress_dialog = QProgressDialog("Preparing export...", "Cancel", 0, 1, self)
+            progress_dialog.setWindowTitle("Exporting")
+            progress_dialog.setWindowModality(Qt.WindowModal)
+            progress_dialog.setMinimumDuration(0)
+            progress_dialog.setValue(0)
+
+            def _progress_callback(current: int, total: int, message: str) -> None:
+                progress_dialog.setMaximum(max(total, 1))
+                progress_dialog.setValue(min(current, max(total, 1)))
+                progress_dialog.setLabelText(message)
+                QApplication.processEvents()
+
+            def _cancel_checker() -> bool:
+                QApplication.processEvents()
+                return bool(progress_dialog.wasCanceled())
+
+            try:
+                result = export_rectified_image(
+                    source_image=source.source_image,
+                    homography_image_to_reference=source.homography_image_to_reference,
+                    control_points=source.control_points,
+                    output_path=file_name,
+                    pixel_size=settings.pixel_size,
+                    units=self.project.units,
+                    output_format=settings.output_format,
+                    dpi=settings.dpi,
+                    bit_depth=settings.bit_depth,
+                    resampling=settings.resampling,
+                    compression=settings.compression,
+                    clip_to_hull=settings.clip_to_hull,
+                    clip_polygon=source.clip_polygon if settings.use_clip_polygon else None,
+                    reference_roi=self.project.reference_roi
+                    if settings.use_reference_roi
+                    else None,
+                    write_metadata_json=settings.include_json_sidecar,
+                    embed_in_tiff=settings.embed_in_tiff,
+                    multi_layer=settings.multi_layer,
+                    reference_segments=reference_segments,
+                    progress_callback=_progress_callback,
+                    cancel_checker=_cancel_checker,
+                    reference_extents=reference_extents,
+                    project_name=self.project.name,
+                    rms_error=source.rms_error,
+                    warnings=combined_warnings,
+                    gps_pose=source.gps_pose,
+                    camera_pose=source.camera_pose,
+                )
+            except ExportCancelledError:
+                progress_dialog.cancel()
+                self.statusBar().showMessage("Export cancelled", 5000)
+                return None
+            finally:
+                progress_dialog.close()
 
         self.statusBar().showMessage(f"Exported {result.image_path.name}", 5000)
         metadata_text = (
@@ -568,6 +615,7 @@ class MainWindow(QMainWindow):
         self.point_table.label_changed.connect(self._update_point_label)
         self.point_table.lock_changed.connect(self._update_point_lock)
         self.point_table.delete_requested.connect(self._delete_selected_point)
+        self.project_panel.active_image_changed.connect(self._switch_active_image)
         self.project_panel.project_name_changed.connect(self._update_project_name)
         self.project_panel.units_changed.connect(self._update_project_units)
         self.project_panel.export_settings_changed.connect(self._update_export_settings)
@@ -663,6 +711,7 @@ class MainWindow(QMainWindow):
 
     def _new_project(self) -> None:
         self.project = ProjectData()
+        self.project.sync_from_active_image()
         self.project_path = None
         self.reference_2d = None
         self.reference_3d = None
@@ -858,6 +907,17 @@ class MainWindow(QMainWindow):
         self.project.touch()
         self._update_window_title()
 
+    def _switch_active_image(self, index: int) -> None:
+        if index < 0 or index == self.project.active_image_index:
+            return
+        self.project.sync_to_active_image()
+        self.project.active_image_index = index
+        self.project.sync_from_active_image()
+        self.selected_point_id = None
+        self._load_current_image_asset()
+        self._recompute_transform()
+        self._refresh_ui(status=f"Switched to image {Path(self.project.image_path).name}")
+
     def _update_project_units(self, units: str) -> None:
         self.project.units = units
         self.project.touch()
@@ -873,6 +933,207 @@ class MainWindow(QMainWindow):
         self.project.export_settings = settings
         self.project.touch()
         self._refresh_project_panel_context()
+
+    @staticmethod
+    def _lens_profile_from_correction(
+        correction: dict[str, object] | None,
+    ) -> LensProfile | None:
+        if not correction or not correction.get("applied"):
+            return None
+
+        profile_payload = correction.get("profile")
+        if not isinstance(profile_payload, dict):
+            return None
+
+        try:
+            return lens_profile_from_dict(profile_payload)
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _load_image_entry_source(self, entry: ImageEntry) -> np.ndarray:
+        if not entry.path:
+            raise ValueError("Image entry has no source path.")
+        image = load_image(entry.path)
+        profile = self._lens_profile_from_correction(entry.lens_correction)
+        if profile is None:
+            return image
+        return apply_lens_correction(image, profile)
+
+    def _build_entry_camera_pose(
+        self,
+        entry: ImageEntry,
+        source_image: np.ndarray,
+        homography_image_to_reference: np.ndarray,
+    ) -> dict[str, object] | None:
+        profile = self._lens_profile_from_correction(entry.lens_correction)
+        if profile is None:
+            return None
+        return build_camera_pose(
+            homography_image_to_reference=homography_image_to_reference,
+            image_size=(source_image.shape[1], source_image.shape[0]),
+            profile=profile,
+            gps_pose=entry.gps_pose,
+            reference_crs_epsg=self.project.reference_crs_epsg,
+        )
+
+    def _collect_export_sources(self) -> tuple[list[MosaicSource], list[str]]:
+        self.project.ensure_image_entries()
+
+        sources: list[MosaicSource] = []
+        warnings: list[str] = []
+        for index, entry in enumerate(self.project.images):
+            label = Path(entry.path).stem or f"Image {index + 1}"
+            paired_points = [point for point in entry.points if point.is_paired]
+            if not entry.path:
+                continue
+            if entry.transform_matrix is None or len(paired_points) < 4:
+                warnings.append(f"Skipped {label}: needs at least four paired points")
+                continue
+            image_path = Path(entry.path)
+            if not image_path.exists():
+                warnings.append(f"Skipped {label}: source image not found")
+                continue
+
+            gps_pose = (
+                entry.gps_pose if entry.gps_pose is not None else extract_gps_pose(image_path)
+            )
+            entry.gps_pose = gps_pose
+            source_image = self._load_image_entry_source(entry)
+            homography = np.asarray(entry.transform_matrix, dtype=np.float64)
+            sources.append(
+                MosaicSource(
+                    label=label,
+                    source_image=source_image,
+                    homography_image_to_reference=homography,
+                    control_points=paired_points,
+                    clip_polygon=entry.clip_polygon,
+                    gps_pose=gps_pose,
+                    camera_pose=self._build_entry_camera_pose(entry, source_image, homography),
+                    rms_error=entry.rms_error,
+                    warnings=tuple(entry.warnings),
+                )
+            )
+            warnings.extend(entry.warnings)
+
+        if not sources:
+            raise ValueError("At least one image with four valid point pairs is required.")
+        return sources, list(dict.fromkeys(warnings))
+
+    def _total_project_point_count(self) -> int:
+        self.project.ensure_image_entries()
+        return sum(len(entry.points) for entry in self.project.images)
+
+    def _activate_or_create_image(self, image_path: Path) -> None:
+        existing_index = next(
+            (
+                index
+                for index, entry in enumerate(self.project.images)
+                if entry.path and Path(entry.path) == image_path
+            ),
+            None,
+        )
+        if existing_index is None:
+            if not self.project.images:
+                self.project.images.append(ImageEntry(path=str(image_path)))
+                self.project.active_image_index = 0
+            elif len(self.project.images) == 1 and not self.project.images[0].path:
+                self.project.images[0].path = str(image_path)
+                self.project.active_image_index = 0
+            else:
+                self.project.images.append(ImageEntry(path=str(image_path)))
+                self.project.active_image_index = len(self.project.images) - 1
+        else:
+            self.project.active_image_index = existing_index
+
+        self.project.sync_from_active_image()
+        self.project.image_path = str(image_path)
+        if existing_index is None:
+            self.project.lens_correction = None
+            self.project.clip_polygon = None
+            self.project.points = []
+            self.project.rms_error = None
+            self.project.transform_matrix = None
+            self.project.warnings = []
+
+    def _load_current_image_asset(self) -> None:
+        self.source_image_original = None
+        self.source_image = None
+        if self.project.image_path and Path(self.project.image_path).exists():
+            self.source_image_original = load_image(self.project.image_path)
+            self._refresh_source_image()
+            if self.project.images:
+                self.project.images[self.project.active_image_index].gps_pose = extract_gps_pose(
+                    self.project.image_path
+                )
+
+    def _rough_gps_markers(self) -> list[tuple[str, tuple[float, float]]]:
+        if self.reference_2d is None or not self.project.images:
+            return []
+
+        if self.project.reference_crs_epsg is not None:
+            transformed_markers: list[tuple[str, tuple[float, float]]] = []
+            for index, image in enumerate(self.project.images):
+                gps_pose = image.gps_pose
+                if gps_pose is None and image.path:
+                    gps_pose = extract_gps_pose(image.path)
+                    image.gps_pose = gps_pose
+                if gps_pose is None:
+                    continue
+                reference_xy = gps_to_reference_xy(gps_pose, self.project.reference_crs_epsg)
+                if reference_xy is None:
+                    continue
+                label = Path(image.path).stem or f"Image {index + 1}"
+                transformed_markers.append((label, reference_xy))
+            if transformed_markers:
+                return transformed_markers
+
+        origin_index = next(
+            (
+                index
+                for index, image in enumerate(self.project.images)
+                if (
+                    image.gps_pose is not None
+                    or (image.path and extract_gps_pose(image.path) is not None)
+                )
+            ),
+            None,
+        )
+        if origin_index is None:
+            return []
+
+        origin_pose = self.project.images[origin_index].gps_pose
+        if origin_pose is None and self.project.images[origin_index].path:
+            origin_pose = extract_gps_pose(self.project.images[origin_index].path)
+            self.project.images[origin_index].gps_pose = origin_pose
+        if origin_pose is None:
+            return []
+
+        center_x = (self.reference_2d.extents_min[0] + self.reference_2d.extents_max[0]) * 0.5
+        center_y = (self.reference_2d.extents_min[1] + self.reference_2d.extents_max[1]) * 0.5
+        units_per_meter = 1000.0 / max(unit_to_mm(self.project.units), 1e-6)
+
+        markers: list[tuple[str, tuple[float, float]]] = []
+        for index, image in enumerate(self.project.images):
+            gps_pose = image.gps_pose
+            if gps_pose is None and image.path:
+                gps_pose = extract_gps_pose(image.path)
+                image.gps_pose = gps_pose
+            if gps_pose is None:
+                continue
+            offset = gps_offset_meters(origin_pose, gps_pose)
+            if offset is None:
+                continue
+            label = Path(image.path).stem or f"Image {index + 1}"
+            markers.append(
+                (
+                    label,
+                    (
+                        center_x + offset[0] * units_per_meter,
+                        center_y + offset[1] * units_per_meter,
+                    ),
+                )
+            )
+        return markers
 
     def _set_selected_point(self, point_id: int | None) -> None:
         self.selected_point_id = point_id
@@ -890,6 +1151,7 @@ class MainWindow(QMainWindow):
         self.transform_result = None
 
         if len(paired_points) < 4:
+            self.project.sync_to_active_image()
             return
 
         try:
@@ -899,6 +1161,7 @@ class MainWindow(QMainWindow):
             )
         except Exception as exc:
             self.project.warnings = [str(exc)]
+            self.project.sync_to_active_image()
             return
 
         self.transform_result = result
@@ -913,11 +1176,14 @@ class MainWindow(QMainWindow):
         ):
             point.residual = residual
             point.residual_vector = residual_vector
+        self.project.sync_to_active_image()
 
     def _refresh_ui(self, status: str | None = None) -> None:
+        self.project.ensure_image_entries()
         self.image_viewer.set_image(self.source_image)
         self.reference_viewer.set_reference(self.reference_2d)
         self.reference_viewer.set_points(self.project.points, self.selected_point_id)
+        self.reference_viewer.set_gps_markers(self._rough_gps_markers())
         self.reference3d_viewer.set_reference(self.reference_3d)
         if self.reference_3d is not None:
             self.reference3d_viewer.set_working_plane(
@@ -957,6 +1223,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(status, 5000)
 
     def _reload_assets_from_project(self) -> None:
+        self.project.sync_from_active_image()
         self.source_image = None
         self.source_image_original = None
         self.reference_2d = None
@@ -969,6 +1236,8 @@ class MainWindow(QMainWindow):
         if reference_path and reference_path.exists():
             if self.project.reference_type == "dxf":
                 self.reference_2d = load_dxf(reference_path)
+                if self.reference_2d.crs_epsg is not None:
+                    self.project.reference_crs_epsg = self.reference_2d.crs_epsg
             elif self.project.reference_type == "e57":
                 self.reference_3d = load_e57(reference_path)
             elif self.project.reference_type == "obj":
@@ -1100,6 +1369,7 @@ class MainWindow(QMainWindow):
     def _record_history(self) -> None:
         if self._restoring_history:
             return
+        self.project.sync_to_active_image()
         snapshot = self.project.clone()
         self._history = self._history[: self._history_index + 1]
         self._history.append(snapshot)
@@ -1162,27 +1432,40 @@ class MainWindow(QMainWindow):
             return None
 
     def _confirm_export_preview(self) -> bool:
-        if self.source_image is None:
-            raise ValueError("Load an image before exporting.")
-        if self.transform_result is None or self.project.transform_matrix is None:
-            raise ValueError("At least four valid point pairs are required before export.")
+        self.project.sync_to_active_image()
+        sources, preview_warnings = self._collect_export_sources()
+        total_point_count = self._total_project_point_count()
 
+        if len(sources) > 1:
+            preview = PreviewDialog(
+                export_settings=self.project.export_settings,
+                units=self.project.units,
+                project_name=self.project.name,
+                total_point_count=total_point_count,
+                reference_extents=self._current_reference_extents(),
+                rms_error=None,
+                warnings=preview_warnings,
+                reference_2d=self.reference_2d,
+                reference_roi=self.project.reference_roi,
+                mosaic_sources=sources,
+                parent=self,
+            )
+            return bool(preview.exec())
+
+        source = sources[0]
         preview = PreviewDialog(
-            source_image=self.source_image,
-            homography_image_to_reference=np.asarray(
-                self.project.transform_matrix,
-                dtype=np.float64,
-            ),
-            control_points=self.project.paired_points(),
-            total_point_count=len(self.project.points),
             export_settings=self.project.export_settings,
             units=self.project.units,
             project_name=self.project.name,
-            rms_error=self.project.rms_error,
-            warnings=self.project.warnings,
+            total_point_count=total_point_count,
             reference_extents=self._current_reference_extents(),
+            source_image=source.source_image,
+            homography_image_to_reference=source.homography_image_to_reference,
+            control_points=source.control_points,
+            rms_error=source.rms_error,
+            warnings=list(dict.fromkeys([*preview_warnings, *source.warnings])),
             reference_2d=self.reference_2d,
-            clip_polygon=self.project.clip_polygon,
+            clip_polygon=source.clip_polygon,
             reference_roi=self.project.reference_roi,
             parent=self,
         )
@@ -1200,18 +1483,7 @@ class MainWindow(QMainWindow):
         return max(float(span) * 0.02, 1e-6)
 
     def _current_lens_profile(self) -> LensProfile | None:
-        correction = self.project.lens_correction
-        if not correction or not correction.get("applied"):
-            return None
-
-        profile_payload = correction.get("profile")
-        if not isinstance(profile_payload, dict):
-            return None
-
-        try:
-            return lens_profile_from_dict(profile_payload)
-        except (KeyError, TypeError, ValueError):
-            return None
+        return self._lens_profile_from_correction(self.project.lens_correction)
 
     def _refresh_source_image(self) -> None:
         if self.source_image_original is None:

@@ -39,6 +39,7 @@ class Reference2DViewer(QGraphicsView):
         self._layer_items: dict[str, list[QGraphicsLineItem]] = {}
         self._overlay_items: list[QGraphicsItem] = []
         self._points: list[ControlPoint] = []
+        self._gps_markers: list[tuple[str, tuple[float, float]]] = []
         self._selected_point_id: int | None = None
         self._is_panning = False
         self._last_pan_pos = QPoint()
@@ -98,6 +99,10 @@ class Reference2DViewer(QGraphicsView):
     ) -> None:
         self._selected_point_id = selected_point_id
         self._points = list(points)
+        self._redraw_overlays()
+
+    def set_gps_markers(self, markers: Iterable[tuple[str, tuple[float, float]]]) -> None:
+        self._gps_markers = list(markers)
         self._redraw_overlays()
 
     def set_reference_roi(self, reference_roi: tuple[float, float, float, float] | None) -> None:
@@ -185,6 +190,29 @@ class Reference2DViewer(QGraphicsView):
                 endpoint.setBrush(QBrush(QColor(ERROR)))
                 self._scene.addItem(endpoint)
                 self._overlay_items.append(endpoint)
+
+        for label_text, world_xy in self._gps_markers:
+            scene = _world_to_scene(world_xy)
+            gps_marker = QGraphicsRectItem(-5.0, -5.0, 10.0, 10.0)
+            gps_marker.setPos(scene)
+            gps_marker.setRotation(45.0)
+            gps_marker.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+            gps_marker.setPen(QPen(QColor(ACCENT), 1.5))
+            gps_marker.setBrush(QBrush(QColor(ACCENT)))
+            self._scene.addItem(gps_marker)
+            self._overlay_items.append(gps_marker)
+
+            label = QGraphicsSimpleTextItem(label_text)
+            label_font = QFont()
+            label_font.setFamilies(["Inter", "Segoe UI", "Sans Serif"])
+            label_font.setPixelSize(11)
+            label_font.setWeight(QFont.DemiBold)
+            label.setFont(label_font)
+            label.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+            label.setBrush(QBrush(QColor(TEXT_BRIGHT)))
+            label.setPos(scene.x() + 10.0, scene.y() - 16.0)
+            self._scene.addItem(label)
+            self._overlay_items.append(label)
 
         if self._reference_roi is not None:
             self._draw_reference_roi(self._reference_roi)

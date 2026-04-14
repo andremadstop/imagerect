@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
+from typing import Any
 
 import ezdxf
 import numpy as np
@@ -34,6 +36,7 @@ class Reference2D:
     layers: list[LayerInfo] = field(default_factory=list)
     segments: list[Segment] = field(default_factory=list)
     units: str = "mm"
+    crs_epsg: int | None = None
     extents_min: Point2D = (0.0, 0.0)
     extents_max: Point2D = (0.0, 0.0)
     vertices: list[Point2D] = field(default_factory=list)
@@ -70,10 +73,12 @@ def load_dxf(path: str | Path) -> Reference2D:
 
     extents_min, extents_max = _compute_extents(vertices)
     units = _units_from_code(int(document.header.get("$INSUNITS", 0)))
+    crs_epsg = _extract_crs_epsg(document, reference_path)
     return Reference2D(
         layers=layers,
         segments=segments,
         units=units,
+        crs_epsg=crs_epsg,
         extents_min=extents_min,
         extents_max=extents_max,
         vertices=_deduplicate_points(vertices),
@@ -223,3 +228,32 @@ def _units_from_code(code: int) -> str:
         6: "m",
     }
     return units_map.get(code, "mm")
+
+
+def _extract_crs_epsg(document: Any, path: Path) -> int | None:
+    for value in _iter_document_metadata_strings(document):
+        match = re.search(r"\bEPSG[:= ]+(\d{4,6})\b", value, re.IGNORECASE)
+        if match is not None:
+            return int(match.group(1))
+
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+
+    match = re.search(r"\bEPSG[:= ]+(\d{4,6})\b", text, re.IGNORECASE)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _iter_document_metadata_strings(document: Any) -> Iterable[str]:
+    for entity in document.modelspace():
+        xdata = getattr(entity, "xdata", None)
+        if xdata is None:
+            continue
+        for tags in getattr(xdata, "data", {}).values():
+            for tag in tags:
+                value = getattr(tag, "value", None)
+                if isinstance(value, str):
+                    yield value
