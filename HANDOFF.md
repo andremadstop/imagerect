@@ -3,6 +3,91 @@
 > Wird nach jeder größeren Session aktualisiert. Codex/Claude liest
 > das als erstes wenn eine neue Session startet.
 
+## Stand 2026-04-14 spätabends — Task 014 abgeschlossen, Task 015 als Nächstes
+
+### Was in dieser Session fertig wurde
+
+- **Task 014 — Lens Correction Preview + Apply Fix** abgeschlossen in
+  3 Commits auf `main`:
+  `a332a8e` (`fix: update lens preview when parameters change`),
+  `97426a4` (`fix: keep lens apply visible in the image viewer`),
+  `1a5d9a3` (`test: cover the full lens apply workflow`)
+- Lens-Dialog reagiert jetzt debounced auf Parameter-Änderungen der
+  Spinboxes und Preset-Übernahmen
+- Der `ImageViewer` behält seinen Ausschnitt über reine Bild-Refreshes
+  hinweg, statt bei Lens-Apply sofort wieder auf Fit-to-View zu springen
+- Neue Regressionstests decken Spinbox-Preview, sichtbaren Apply-Pfad
+  und den vollständigen Dialog-zu-Viewer-Flow ab
+
+### Was grün ist
+
+- `.venv/bin/pre-commit run --all-files`
+- `QT_QPA_PLATFORM=offscreen .venv/bin/pytest -v`
+- `QT_QPA_PLATFORM=offscreen .venv/bin/python main.py --smoke-test`
+
+### Wichtige Einschränkung
+
+- **Manueller GUI-Check steht weiter auf Andres Seite aus**:
+  Lens-Dialog live durchklicken und auf echtem Bildmaterial visuell
+  bestätigen. Dieser Session-Stand ist technisch verifiziert, aber
+  nicht per interaktivem Desktop-Test abgesegnet.
+
+### Nächster Schritt
+
+1. **Task 015 — DXF-Viewer State Preservation** starten
+2. Nach 015: pushen, CI prüfen, dann laut Handoff **STOP** bis Andre
+   manuell testet
+
+## Stand 2026-04-14 abends — bgis/Peiler-Integration beachten
+
+> **WICHTIG FÜR CODEX**: ImageRect ist public, MIT, allgemein.
+> bgis-Adoption ist ein Use-Case, kein Constraint. Das Repo bleibt
+> lokal-first und allgemein verständlich, ohne bgis-spezifische
+> Credentials, Hostnames oder Kundendaten.
+
+### Welche Files Peiler ingestiert
+
+Manifest im bgis-copilot-Repo:
+`https://github.com/andremadstop/bgis-copilot/blob/master/backend/seeds/imagerect.yaml`
+
+- `README.md` — Projektübersicht + Feature-Liste
+- `AGENTS.md` — Projekt-Struktur + Konventionen
+- `HANDOFF.md` — aktueller Entwicklungsstand
+- `ROADMAP.md` — geplante Phasen
+- `TESTING.md` — Test-/QA-Konzept
+- `docs/**/*.md` — User-Dokumentation
+
+`CODEX-TASK-*.md` werden aktuell **nicht** ingestiert. Das sind lokale
+interne Task-Notizen und bleiben außerhalb des public repo.
+
+### Konsequenzen für Codex
+
+- **HANDOFF.md nach jeder Session aktualisieren** — das ist Peilers
+  "Was hat Andre gerade gemacht"-Quelle
+- **README.md Feature-Liste im gleichen Commit wie neue Features
+  aktualisieren**
+- **ROADMAP.md bei Richtungswechsel im gleichen Arbeitsgang anpassen**
+- **Breaking Changes erzwingen Doku-Update im gleichen Commit**
+- **Commit-Messages verständlich formulieren**, damit Timeline-Einträge
+  für bgis-Anwender lesbar bleiben
+
+### Heute vs. später
+
+- Heute: Peiler pullt `main` täglich per Cron und ingestiert geänderte
+  Dateien SHA-idempotent neu. Kein Action-Item für Codex.
+- Später möglich, aber jetzt nicht bauen:
+  `.github/workflows/notify-peiler.yml` für on-push Webhook-Notify
+- Später möglich, aber jetzt nicht bauen:
+  Issue-Template `bgis-request.md`, falls Peiler User-Wünsche direkt
+  als Issues anlegt
+
+### Nicht tun
+
+- Keine bgis-Daten, Screenshots, Logfiles oder Credentials committen
+- Keinen bgis-spezifischen Code in ImageRect einbauen
+- Keine Sonder-Branches "für bgis" anlegen; `imagerect` bleibt sauberes
+  public project
+
 ## Stand 2026-04-14 nachmittags — 3-Tage-Autonom-Run für Codex
 
 > **WICHTIG FÜR CODEX**: Andre ist die nächsten ~3 Tage nur sporadisch
