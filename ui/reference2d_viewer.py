@@ -54,17 +54,23 @@ class Reference2DViewer(QGraphicsView):
         self.setFocusPolicy(Qt.StrongFocus)
 
     def set_reference(self, reference: Reference2D | None) -> None:
+        reference_changed = reference is not self._reference
+        self._reference = reference
+        self._rebuild_scene()
+        if reference_changed and reference is not None:
+            self._fit_scene_to_view()
+
+    def _rebuild_scene(self) -> None:
         self._scene.clear()
         self._layer_items = {}
         self._overlay_items.clear()
         self._points = []
-        self._reference = reference
-        if reference is None:
+        if self._reference is None:
             self.setSceneRect(0.0, 0.0, 1.0, 1.0)
             return
 
-        colors = _layer_color_lookup(reference.layers)
-        for segment in reference.segments:
+        colors = _layer_color_lookup(self._reference.layers)
+        for segment in self._reference.segments:
             start = _world_to_scene(segment.start)
             end = _world_to_scene(segment.end)
             item = QGraphicsLineItem(start.x(), start.y(), end.x(), end.y())
@@ -72,8 +78,8 @@ class Reference2DViewer(QGraphicsView):
             self._scene.addItem(item)
             self._layer_items.setdefault(segment.layer, []).append(item)
 
-        ext_min = reference.extents_min
-        ext_max = reference.extents_max
+        ext_min = self._reference.extents_min
+        ext_max = self._reference.extents_max
         margin = max((ext_max[0] - ext_min[0]) * 0.05, (ext_max[1] - ext_min[1]) * 0.05, 10.0)
         self.setSceneRect(
             ext_min[0] - margin,
@@ -81,10 +87,12 @@ class Reference2DViewer(QGraphicsView):
             (ext_max[0] - ext_min[0]) + margin * 2.0,
             (ext_max[1] - ext_min[1]) + margin * 2.0,
         )
-        self.resetTransform()
-        self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
         self._update_geometry_opacity()
         self._redraw_overlays()
+
+    def _fit_scene_to_view(self) -> None:
+        self.resetTransform()
+        self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
 
     def set_layer_visibility(self, layer_name: str, visible: bool) -> None:
         if self._reference is None:
