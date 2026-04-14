@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
+
+Point2D = tuple[float, float]
 
 
 @dataclass(slots=True)
@@ -87,6 +90,21 @@ def apply_lens_correction(
     return cv2.undistort(image, camera_matrix, distortion, None, new_camera_matrix)
 
 
+def remap_points_between_profiles(
+    points: Sequence[Point2D],
+    image_size: tuple[int, int],
+    old_profile: LensProfile | None,
+    new_profile: LensProfile | None,
+) -> list[Point2D]:
+    """Move image-space points from one correction space into another."""
+
+    if not points:
+        return []
+
+    raw_points = _points_to_raw_image(points, image_size, old_profile)
+    return _points_from_raw_image(raw_points, image_size, new_profile)
+
+
 def load_presets() -> list[LensProfile]:
     """Load built-in camera presets."""
 
@@ -151,3 +169,76 @@ def _to_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _points_to_raw_image(
+    points: Sequence[Point2D],
+    image_size: tuple[int, int],
+    profile: LensProfile | None,
+) -> np.ndarray:
+    point_array = np.asarray(points, dtype=np.float64).reshape(-1, 1, 2)
+    if profile is None:
+        return point_array
+
+    camera_matrix, distortion, corrected_camera_matrix = _camera_models(profile, image_size)
+    normalized = cv2.undistortPoints(
+        point_array,
+        corrected_camera_matrix,
+        None,
+    ).reshape(-1, 2)
+    rays = np.concatenate(
+        [normalized, np.ones((normalized.shape[0], 1), dtype=np.float64)],
+        axis=1,
+    )
+    raw_points, _ = cv2.projectPoints(
+        rays,
+        np.zeros(3, dtype=np.float64),
+        np.zeros(3, dtype=np.float64),
+        camera_matrix,
+        distortion,
+    )
+    return raw_points.astype(np.float64)
+
+
+def _points_from_raw_image(
+    raw_points: np.ndarray,
+    image_size: tuple[int, int],
+    profile: LensProfile | None,
+) -> list[Point2D]:
+    if profile is None:
+        return _as_point_list(raw_points)
+
+    camera_matrix, distortion, corrected_camera_matrix = _camera_models(profile, image_size)
+    corrected = cv2.undistortPoints(
+        raw_points.astype(np.float64),
+        camera_matrix,
+        distortion,
+        P=corrected_camera_matrix,
+    )
+    return _as_point_list(corrected)
+
+
+def _camera_models(
+    profile: LensProfile,
+    image_size: tuple[int, int],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    width, height = image_size
+    camera_matrix = build_camera_matrix(
+        profile.focal_length_mm,
+        profile.sensor_width_mm,
+        width,
+        height,
+    )
+    distortion = build_distortion_coefficients(profile)
+    corrected_camera_matrix, _roi = cv2.getOptimalNewCameraMatrix(
+        camera_matrix,
+        distortion,
+        (width, height),
+        0.0,
+        (width, height),
+    )
+    return camera_matrix, distortion, corrected_camera_matrix
+
+
+def _as_point_list(points: np.ndarray) -> list[Point2D]:
+    return [(float(point[0]), float(point[1])) for point in points.reshape(-1, 2)]

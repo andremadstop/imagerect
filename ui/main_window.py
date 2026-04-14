@@ -37,7 +37,12 @@ from core.export import (
     export_rectified_image,
 )
 from core.image import load_image
-from core.lens import LensProfile, apply_lens_correction, lens_profile_from_dict
+from core.lens import (
+    LensProfile,
+    apply_lens_correction,
+    lens_profile_from_dict,
+    remap_points_between_profiles,
+)
 from core.pose import build_camera_pose, extract_gps_pose, gps_offset_meters, gps_to_reference_xy
 from core.project import (
     ControlPoint,
@@ -665,11 +670,14 @@ class MainWindow(QMainWindow):
         if dialog.exec() == 0:
             return
 
+        previous_profile = self._current_lens_profile()
+        next_profile = dialog.selected_profile()
+        self._remap_active_image_geometry_for_lens_change(previous_profile, next_profile)
         self.project.lens_correction = dialog.lens_correction_payload()
         self._refresh_source_image()
         self._record_history()
         self._recompute_transform()
-        self._refresh_ui(status="Applied lens correction; verify image control points")
+        self._refresh_ui(status="Applied lens correction; image points and ROI were updated")
 
     def _open_reference_dialog(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(
@@ -1022,6 +1030,42 @@ class MainWindow(QMainWindow):
     def _total_project_point_count(self) -> int:
         self.project.ensure_image_entries()
         return sum(len(entry.points) for entry in self.project.images)
+
+    def _remap_active_image_geometry_for_lens_change(
+        self,
+        old_profile: LensProfile | None,
+        new_profile: LensProfile | None,
+    ) -> None:
+        if self.source_image_original is None or old_profile == new_profile:
+            return
+
+        image_size = (
+            self.source_image_original.shape[1],
+            self.source_image_original.shape[0],
+        )
+        image_points = [
+            point.image_xy for point in self.project.points if point.image_xy is not None
+        ]
+        if image_points:
+            remapped_points = iter(
+                remap_points_between_profiles(
+                    image_points,
+                    image_size,
+                    old_profile,
+                    new_profile,
+                )
+            )
+            for point in self.project.points:
+                if point.image_xy is not None:
+                    point.image_xy = next(remapped_points)
+
+        if self.project.clip_polygon:
+            self.project.clip_polygon = remap_points_between_profiles(
+                self.project.clip_polygon,
+                image_size,
+                old_profile,
+                new_profile,
+            )
 
     def _activate_or_create_image(self, image_path: Path) -> None:
         existing_index = next(

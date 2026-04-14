@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import cv2
 import numpy as np
 import pytest
@@ -11,7 +13,10 @@ from core.lens import (
     build_distortion_coefficients,
     load_presets,
     match_preset,
+    remap_points_between_profiles,
 )
+from core.transform import solve_planar_homography
+from ui.main_window import MainWindow
 
 
 def test_build_camera_matrix_correctness() -> None:
@@ -69,3 +74,80 @@ def test_exif_match_preset_by_make_model() -> None:
 
     assert preset is not None
     assert preset.name == "DJI Mavic 3"
+
+
+def test_lens_correction_remaps_control_points(qtbot: Any) -> None:
+    profile = LensProfile(
+        name="remap",
+        focal_length_mm=24.0,
+        sensor_width_mm=36.0,
+        k1=-0.08,
+        k2=0.01,
+        p1=0.001,
+        p2=-0.001,
+    )
+    image = np.zeros((240, 320, 3), dtype=np.uint8)
+    distorted_points = [
+        (42.0, 36.0),
+        (286.0, 44.0),
+        (294.0, 206.0),
+        (51.0, 198.0),
+    ]
+    reference_points = [
+        (0.0, 0.0),
+        (4.0, 0.0),
+        (4.0, 3.0),
+        (0.0, 3.0),
+    ]
+
+    camera_matrix = build_camera_matrix(24.0, 36.0, 320, 240)
+    distortion = build_distortion_coefficients(profile)
+    new_camera_matrix, _roi = cv2.getOptimalNewCameraMatrix(
+        camera_matrix,
+        distortion,
+        (320, 240),
+        0.0,
+        (320, 240),
+    )
+    expected_corrected = cv2.undistortPoints(
+        np.asarray(distorted_points, dtype=np.float64).reshape(-1, 1, 2),
+        camera_matrix,
+        distortion,
+        P=new_camera_matrix,
+    ).reshape(-1, 2)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.source_image_original = image
+    for image_xy, reference_xy in zip(distorted_points, reference_points, strict=True):
+        point = window.project.add_point()
+        point.image_xy = image_xy
+        point.reference_xy = reference_xy
+
+    window._remap_active_image_geometry_for_lens_change(None, profile)
+
+    remapped_points = [
+        point.image_xy for point in window.project.points if point.image_xy is not None
+    ]
+    np.testing.assert_allclose(np.asarray(remapped_points), expected_corrected, atol=1e-6)
+
+    restored_points = remap_points_between_profiles(
+        remapped_points,
+        (320, 240),
+        profile,
+        None,
+    )
+    np.testing.assert_allclose(np.asarray(restored_points), np.asarray(distorted_points), atol=1e-5)
+
+    window._recompute_transform()
+
+    assert window.transform_result is not None
+    expected_result = solve_planar_homography(
+        [(float(x), float(y)) for x, y in expected_corrected],
+        reference_points,
+    )
+    np.testing.assert_allclose(
+        np.asarray(window.transform_result.projected_reference_points),
+        np.asarray(expected_result.projected_reference_points),
+        atol=1e-6,
+    )
