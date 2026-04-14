@@ -3,6 +3,36 @@
 > Wird nach jeder größeren Session aktualisiert. Codex/Claude liest
 > das als erstes wenn eine neue Session startet.
 
+## Stand 2026-04-14 spät nachts — Task 011 auf direkte Freigabe umgesetzt
+
+### Was in dieser Session dazukam
+
+- Andre hat den früheren STOP nach Task 015 **explizit aufgehoben**
+  (`"mach einfach weiter"`), deshalb wurde der freigegebene
+  Leerlauf-Task 011 direkt nachgezogen
+- **Task 011 — Property-based + Golden-File Tests** umgesetzt:
+  `hypothesis` als Dev-Dependency ergänzt, neues
+  `tests/test_transform_properties.py`, neues
+  `tests/test_export_golden.py`, Golden-Fixtures unter `tests/golden/`
+  und Regenerationsskript `scripts/regenerate_golden.py`
+- Property-Tests decken Homographie-Invarianten, Invertierbarkeit,
+  Rang und degenerierte Eingaben über Warnung/Fehler ab
+- Golden-Tests decken den Export deterministisch gegen committete
+  TIFF/JPEG-Artefakte und normalisierte Metadaten ab
+
+### Was grün ist
+
+- `.venv/bin/pre-commit run --all-files`
+- `QT_QPA_PLATFORM=offscreen .venv/bin/pytest -v`
+- `QT_QPA_PLATFORM=offscreen .venv/bin/python main.py --smoke-test`
+
+### Nächster Zustand
+
+- Kein weiterer autonomer Scope-Sprung vorbereitet
+- Sinnvoller nächster Schritt ist jetzt wieder Andres manuelle Prüfung
+  der UI-Fixes aus 014/015; Task 011 war reine Test-Härtung ohne
+  User-facing Änderung
+
 ## Stand 2026-04-14 nachts — Task 015 abgeschlossen, jetzt STOP
 
 ### Was in dieser Session fertig wurde
