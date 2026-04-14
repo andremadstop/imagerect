@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.export import build_canvas
+from core.export import build_canvas, estimate_output_size_bytes
 from core.project import ExportSettings, Point2D, ProjectData, unit_to_mm
 from ui.theme import ERROR, TEXT_BRIGHT, TEXT_DIM, WARNING
 
@@ -348,12 +348,12 @@ class ProjectPanel(QWidget):
             self._reference_bounds[1],
             pixel_size_units,
         )
-        estimated_size = _estimate_file_size_bytes(
+        layer_count = 3 if self.multi_layer.isChecked() else 1
+        estimated_size = estimate_output_size_bytes(
             width,
             height,
             int(self.bit_depth.currentText()),
-            str(self.output_format.currentData()),
-            self.multi_layer.isChecked(),
+            layer_count=layer_count,
         )
         self.canvas_label.setText(f"Canvas: {width:,} x {height:,} px")
         self.file_size_label.setText(f"File size: ~{_format_bytes(estimated_size)}")
@@ -419,18 +419,6 @@ def _build_spinbox(minimum: float, maximum: float, decimals: int) -> QDoubleSpin
     spinbox.setSingleStep(0.1 if decimals <= 2 else 0.01)
     spinbox.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     return spinbox
-
-
-def _estimate_file_size_bytes(
-    width: int,
-    height: int,
-    bit_depth: int,
-    output_format: str,
-    multi_layer: bool,
-) -> int:
-    bytes_per_channel = 4 if bit_depth == 32 else max(1, bit_depth // 8)
-    layers = 3 if multi_layer and output_format in {"tiff", "bigtiff"} else 1
-    return width * height * 3 * bytes_per_channel * layers
 
 
 def _format_bytes(size: int) -> str:

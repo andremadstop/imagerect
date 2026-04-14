@@ -50,6 +50,7 @@ from core.transform import HomographyResult, solve_planar_homography
 from ui.image_viewer import ImageViewer
 from ui.lens_dialog import LensDialog
 from ui.point_table import PointTable
+from ui.preview_dialog import PreviewDialog
 from ui.project_panel import ProjectPanel
 from ui.reference2d_viewer import Reference2DViewer
 from ui.reference3d_viewer import Reference3DViewer
@@ -619,6 +620,8 @@ class MainWindow(QMainWindow):
 
     def _run_export_dialog(self) -> None:
         try:
+            if not self._confirm_export_preview():
+                return
             self.run_export()
         except Exception as exc:
             QMessageBox.critical(self, "Export failed", str(exc))
@@ -1122,6 +1125,33 @@ class MainWindow(QMainWindow):
             return self._current_reference_extents()
         except ValueError:
             return None
+
+    def _confirm_export_preview(self) -> bool:
+        if self.source_image is None:
+            raise ValueError("Load an image before exporting.")
+        if self.transform_result is None or self.project.transform_matrix is None:
+            raise ValueError("At least four valid point pairs are required before export.")
+
+        preview = PreviewDialog(
+            source_image=self.source_image,
+            homography_image_to_reference=np.asarray(
+                self.project.transform_matrix,
+                dtype=np.float64,
+            ),
+            control_points=self.project.paired_points(),
+            total_point_count=len(self.project.points),
+            export_settings=self.project.export_settings,
+            units=self.project.units,
+            project_name=self.project.name,
+            rms_error=self.project.rms_error,
+            warnings=self.project.warnings,
+            reference_extents=self._current_reference_extents(),
+            reference_2d=self.reference_2d,
+            clip_polygon=self.project.clip_polygon,
+            reference_roi=self.project.reference_roi,
+            parent=self,
+        )
+        return bool(preview.exec())
 
     def _point_pick_tolerance(self) -> float:
         if self.reference_3d is None:

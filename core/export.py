@@ -35,6 +35,18 @@ class RectificationExportResult:
     bounds_max: Point2D
 
 
+@dataclass(slots=True)
+class RectifiedImageRenderResult:
+    image: np.ndarray
+    width: int
+    height: int
+    pixel_size: float
+    pixel_size_reference_units: float
+    bounds_min: Point2D
+    bounds_max: Point2D
+    reference_to_canvas: np.ndarray
+
+
 def export_rectified_image(
     source_image: np.ndarray,
     homography_image_to_reference: np.ndarray,
@@ -55,29 +67,18 @@ def export_rectified_image(
 ) -> RectificationExportResult:
     """Warp the source image into the metric reference plane and save metadata."""
 
-    source_for_warp = source_image
-    if clip_polygon:
-        source_for_warp = _apply_source_polygon_mask(source_image, clip_polygon)
-
-    if reference_roi is not None:
-        bounds_min, bounds_max = _roi_bounds(reference_roi)
-    else:
-        bounds_min, bounds_max = reference_extents or _bounds_from_points(
-            [point.reference_xy for point in control_points if point.reference_xy is not None]
-        )
-    pixel_size_units = pixel_size / unit_to_mm(units)
-    width, height, reference_to_canvas = build_canvas(bounds_min, bounds_max, pixel_size_units)
-    transform_to_canvas = reference_to_canvas @ homography_image_to_reference
-    interpolation = INTERPOLATION_FLAGS.get(resampling, cv2.INTER_LINEAR)
-    warped = cv2.warpPerspective(
-        source_for_warp,
-        transform_to_canvas,
-        (width, height),
-        flags=interpolation,
+    rendered = render_rectified_image(
+        source_image=source_image,
+        homography_image_to_reference=homography_image_to_reference,
+        control_points=control_points,
+        pixel_size=pixel_size,
+        units=units,
+        resampling=resampling,
+        clip_to_hull=clip_to_hull,
+        clip_polygon=clip_polygon,
+        reference_roi=reference_roi,
+        reference_extents=reference_extents,
     )
-
-    if clip_to_hull:
-        warped = _apply_hull_mask(warped, control_points, reference_to_canvas)
 
     target_path = Path(output_path)
     if output_format == "png":
@@ -88,7 +89,7 @@ def export_rectified_image(
     image_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if not cv2.imwrite(str(image_path), warped):
+    if not cv2.imwrite(str(image_path), rendered.image):
         raise ValueError(f"Failed to write rectified image to {image_path}")
 
     metadata = {
@@ -96,15 +97,15 @@ def export_rectified_image(
         "timestamp": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "units": units,
         "pixel_size": pixel_size,
-        "pixel_size_reference_units": pixel_size_units,
+        "pixel_size_reference_units": rendered.pixel_size_reference_units,
         "canvas": {
-            "width": width,
-            "height": height,
-            "bounds_min": [float(bounds_min[0]), float(bounds_min[1])],
-            "bounds_max": [float(bounds_max[0]), float(bounds_max[1])],
+            "width": rendered.width,
+            "height": rendered.height,
+            "bounds_min": [float(rendered.bounds_min[0]), float(rendered.bounds_min[1])],
+            "bounds_max": [float(rendered.bounds_max[0]), float(rendered.bounds_max[1])],
         },
         "transform_matrix": homography_image_to_reference.tolist(),
-        "reference_to_canvas_matrix": reference_to_canvas.tolist(),
+        "reference_to_canvas_matrix": rendered.reference_to_canvas.tolist(),
         "rms_error": rms_error,
         "warnings": list(warnings or []),
         "clip_polygon": [[float(x), float(y)] for x, y in clip_polygon] if clip_polygon else None,
@@ -127,11 +128,62 @@ def export_rectified_image(
     return RectificationExportResult(
         image_path=image_path,
         metadata_path=metadata_path,
+        width=rendered.width,
+        height=rendered.height,
+        pixel_size=pixel_size,
+        bounds_min=rendered.bounds_min,
+        bounds_max=rendered.bounds_max,
+    )
+
+
+def render_rectified_image(
+    source_image: np.ndarray,
+    homography_image_to_reference: np.ndarray,
+    control_points: Sequence[ControlPoint],
+    pixel_size: float,
+    units: str,
+    resampling: str = "bilinear",
+    clip_to_hull: bool = False,
+    clip_polygon: Sequence[Point2D] | None = None,
+    reference_roi: tuple[float, float, float, float] | None = None,
+    reference_extents: tuple[Point2D, Point2D] | None = None,
+) -> RectifiedImageRenderResult:
+    """Warp the source image into the reference plane without writing to disk."""
+
+    source_for_warp = source_image
+    if clip_polygon:
+        source_for_warp = _apply_source_polygon_mask(source_image, clip_polygon)
+
+    if reference_roi is not None:
+        bounds_min, bounds_max = _roi_bounds(reference_roi)
+    else:
+        bounds_min, bounds_max = reference_extents or _bounds_from_points(
+            [point.reference_xy for point in control_points if point.reference_xy is not None]
+        )
+
+    pixel_size_units = pixel_size / unit_to_mm(units)
+    width, height, reference_to_canvas = build_canvas(bounds_min, bounds_max, pixel_size_units)
+    transform_to_canvas = reference_to_canvas @ homography_image_to_reference
+    interpolation = INTERPOLATION_FLAGS.get(resampling, cv2.INTER_LINEAR)
+    warped = cv2.warpPerspective(
+        source_for_warp,
+        transform_to_canvas,
+        (width, height),
+        flags=interpolation,
+    )
+
+    if clip_to_hull:
+        warped = _apply_hull_mask(warped, control_points, reference_to_canvas)
+
+    return RectifiedImageRenderResult(
+        image=warped,
         width=width,
         height=height,
         pixel_size=pixel_size,
+        pixel_size_reference_units=pixel_size_units,
         bounds_min=bounds_min,
         bounds_max=bounds_max,
+        reference_to_canvas=reference_to_canvas,
     )
 
 
@@ -158,6 +210,17 @@ def build_canvas(
         dtype=np.float64,
     )
     return width, height, reference_to_canvas
+
+
+def estimate_output_size_bytes(
+    width: int,
+    height: int,
+    bit_depth: int,
+    layer_count: int = 1,
+    channel_count: int = 3,
+) -> int:
+    bytes_per_channel = 4 if bit_depth == 32 else max(1, bit_depth // 8)
+    return width * height * channel_count * bytes_per_channel * max(layer_count, 1)
 
 
 def _apply_hull_mask(
