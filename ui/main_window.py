@@ -191,12 +191,6 @@ class MainWindow(QMainWindow):
             raise ValueError("At least four valid point pairs are required before export.")
 
         settings = self.project.export_settings
-        if settings.output_format not in {"tiff", "png"}:
-            raise ValueError(
-                f"{settings.output_format.upper()} export will be available "
-                "after the export-engine upgrade."
-            )
-
         reference_extents = self._current_reference_extents()
         default_path = Path.cwd() / f"{self.project.name}_rectified"
         file_name, _ = QFileDialog.getSaveFileName(
@@ -218,11 +212,15 @@ class MainWindow(QMainWindow):
             pixel_size=settings.pixel_size,
             units=self.project.units,
             output_format=settings.output_format,
+            dpi=settings.dpi,
+            bit_depth=settings.bit_depth,
             resampling=settings.resampling,
+            compression=settings.compression,
             clip_to_hull=settings.clip_to_hull,
             clip_polygon=self.project.clip_polygon if settings.use_clip_polygon else None,
             reference_roi=self.project.reference_roi if settings.use_reference_roi else None,
             write_metadata_json=settings.include_json_sidecar,
+            embed_in_tiff=settings.embed_in_tiff,
             reference_extents=reference_extents,
             project_name=self.project.name,
             rms_error=self.project.rms_error,

@@ -13,6 +13,9 @@ import cv2
 import numpy as np
 
 from core.project import ControlPoint, unit_to_mm
+from core.writers.jpeg_writer import write_jpeg_image
+from core.writers.png_writer import write_png_image
+from core.writers.tiff_writer import write_tiff_image
 
 Point2D = tuple[float, float]
 
@@ -55,11 +58,16 @@ def export_rectified_image(
     pixel_size: float,
     units: str,
     output_format: str = "tiff",
+    dpi: float = 300.0,
+    bit_depth: int = 8,
     resampling: str = "bilinear",
+    compression: str = "none",
     clip_to_hull: bool = False,
     clip_polygon: Sequence[Point2D] | None = None,
     reference_roi: tuple[float, float, float, float] | None = None,
     write_metadata_json: bool = True,
+    embed_in_tiff: bool = True,
+    bigtiff_threshold_bytes: int = 4 * 1024**3,
     reference_extents: tuple[Point2D, Point2D] | None = None,
     project_name: str = "Untitled",
     rms_error: float | None = None,
@@ -73,6 +81,7 @@ def export_rectified_image(
         control_points=control_points,
         pixel_size=pixel_size,
         units=units,
+        bit_depth=bit_depth,
         resampling=resampling,
         clip_to_hull=clip_to_hull,
         clip_polygon=clip_polygon,
@@ -83,20 +92,23 @@ def export_rectified_image(
     target_path = Path(output_path)
     if output_format == "png":
         image_path = target_path.with_suffix(".png")
+    elif output_format == "jpeg":
+        image_path = target_path.with_suffix(".jpg")
     else:
         image_path = target_path.with_suffix(".tiff")
     metadata_path = target_path.with_suffix(".json")
     image_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if not cv2.imwrite(str(image_path), rendered.image):
-        raise ValueError(f"Failed to write rectified image to {image_path}")
-
     metadata = {
         "project_name": project_name,
         "timestamp": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "units": units,
         "pixel_size": pixel_size,
+        "dpi": dpi,
+        "output_format": output_format,
+        "bit_depth": bit_depth,
+        "compression": compression,
         "pixel_size_reference_units": rendered.pixel_size_reference_units,
         "canvas": {
             "width": rendered.width,
@@ -108,6 +120,7 @@ def export_rectified_image(
         "reference_to_canvas_matrix": rendered.reference_to_canvas.tolist(),
         "rms_error": rms_error,
         "warnings": list(warnings or []),
+        "bigtiff": False,
         "clip_polygon": [[float(x), float(y)] for x, y in clip_polygon] if clip_polygon else None,
         "reference_roi": list(reference_roi) if reference_roi is not None else None,
         "point_pairs": [
@@ -122,6 +135,16 @@ def export_rectified_image(
             for point in control_points
         ],
     }
+    _write_output_image(
+        image_path,
+        rendered.image,
+        output_format=output_format,
+        dpi=dpi,
+        compression=compression,
+        embed_in_tiff=embed_in_tiff,
+        metadata=metadata,
+        bigtiff_threshold_bytes=bigtiff_threshold_bytes,
+    )
     if write_metadata_json:
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
@@ -142,6 +165,7 @@ def render_rectified_image(
     control_points: Sequence[ControlPoint],
     pixel_size: float,
     units: str,
+    bit_depth: int = 8,
     resampling: str = "bilinear",
     clip_to_hull: bool = False,
     clip_polygon: Sequence[Point2D] | None = None,
@@ -150,9 +174,9 @@ def render_rectified_image(
 ) -> RectifiedImageRenderResult:
     """Warp the source image into the reference plane without writing to disk."""
 
-    source_for_warp = source_image
+    source_for_warp = _convert_image_bit_depth(source_image, bit_depth)
     if clip_polygon:
-        source_for_warp = _apply_source_polygon_mask(source_image, clip_polygon)
+        source_for_warp = _apply_source_polygon_mask(source_for_warp, clip_polygon)
 
     if reference_roi is not None:
         bounds_min, bounds_max = _roi_bounds(reference_roi)
@@ -221,6 +245,87 @@ def estimate_output_size_bytes(
 ) -> int:
     bytes_per_channel = 4 if bit_depth == 32 else max(1, bit_depth // 8)
     return width * height * channel_count * bytes_per_channel * max(layer_count, 1)
+
+
+def _write_output_image(
+    image_path: Path,
+    image: np.ndarray,
+    *,
+    output_format: str,
+    dpi: float,
+    compression: str,
+    embed_in_tiff: bool,
+    metadata: dict[str, object],
+    bigtiff_threshold_bytes: int,
+) -> None:
+    if output_format in {"tiff", "bigtiff"}:
+        estimated_size = estimate_output_size_bytes(
+            image.shape[1],
+            image.shape[0],
+            _bit_depth_from_dtype(image.dtype),
+        )
+        use_bigtiff = output_format == "bigtiff" or estimated_size > bigtiff_threshold_bytes
+        metadata["bigtiff"] = use_bigtiff
+        write_tiff_image(
+            image_path,
+            image,
+            dpi=dpi,
+            compression=compression,
+            metadata=metadata,
+            bigtiff=use_bigtiff,
+            embed_metadata=embed_in_tiff,
+        )
+        return
+
+    if output_format == "png":
+        write_png_image(image_path, image)
+        return
+
+    if output_format == "jpeg":
+        write_jpeg_image(image_path, image)
+        return
+
+    raise ValueError(f"Unsupported export format: {output_format}")
+
+
+def _convert_image_bit_depth(image: np.ndarray, bit_depth: int) -> np.ndarray:
+    if bit_depth not in {8, 16, 32}:
+        raise ValueError("Bit depth must be 8, 16, or 32")
+
+    if bit_depth == _bit_depth_from_dtype(image.dtype):
+        return image.copy()
+
+    normalized = _normalize_image(image)
+    if bit_depth == 8:
+        return np.round(normalized * 255.0).astype(np.uint8)
+    if bit_depth == 16:
+        return np.round(normalized * 65535.0).astype(np.uint16)
+    return normalized.astype(np.float32)
+
+
+def _normalize_image(image: np.ndarray) -> np.ndarray:
+    if image.dtype == np.uint8:
+        return image.astype(np.float32) / 255.0
+    if image.dtype == np.uint16:
+        return image.astype(np.float32) / 65535.0
+    if np.issubdtype(image.dtype, np.floating):
+        normalized = image.astype(np.float32)
+        max_value = float(np.nanmax(normalized)) if normalized.size else 0.0
+        if max_value > 1.0:
+            divisor = 65535.0 if max_value > 255.0 else 255.0
+            normalized = normalized / divisor
+        return np.asarray(np.clip(normalized, 0.0, 1.0), dtype=np.float32)
+    return np.asarray(np.clip(image.astype(np.float32) / 255.0, 0.0, 1.0), dtype=np.float32)
+
+
+def _bit_depth_from_dtype(dtype: np.dtype[np.generic]) -> int:
+    if dtype == np.dtype(np.uint8):
+        return 8
+    if dtype == np.dtype(np.uint16):
+        return 16
+    if dtype in {np.dtype(np.float32), np.dtype(np.float64)}:
+        return 32
+    raise ValueError(f"Unsupported image dtype for export: {dtype}")
 
 
 def _apply_hull_mask(

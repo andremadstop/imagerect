@@ -15,6 +15,8 @@ dependencies = [
     "numpy>=1.26",
     "ezdxf>=1.1",
     "Pillow>=11.0",
+    "tifffile>=2024.0",
+    "imagecodecs>=2024.1",
 ]
 
 [project.optional-dependencies]
@@ -37,7 +39,10 @@ imagerect = "main:main"
 
 [tool.setuptools]
 py-modules = ["main"]
-packages = ["core", "ui"]
+packages = ["core", "core.writers", "ui"]
+
+[tool.setuptools.package-data]
+core = ["lens_presets.json"]
 
 [tool.ruff]
 target-version = "py311"

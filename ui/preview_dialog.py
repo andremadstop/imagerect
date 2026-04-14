@@ -98,6 +98,7 @@ class PreviewDialog(QDialog):
             control_points=control_points,
             pixel_size=preview_pixel_size,
             units=units,
+            bit_depth=export_settings.bit_depth,
             resampling=export_settings.resampling,
             clip_to_hull=export_settings.clip_to_hull,
             clip_polygon=clip_polygon if export_settings.use_clip_polygon else None,

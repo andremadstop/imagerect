@@ -348,7 +348,12 @@ class ProjectPanel(QWidget):
             self._reference_bounds[1],
             pixel_size_units,
         )
-        layer_count = 3 if self.multi_layer.isChecked() else 1
+        layer_count = (
+            3
+            if self.multi_layer.isChecked()
+            and str(self.output_format.currentData()) in {"tiff", "bigtiff"}
+            else 1
+        )
         estimated_size = estimate_output_size_bytes(
             width,
             height,
