@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsItem,
     QGraphicsLineItem,
+    QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
@@ -27,6 +28,8 @@ class Reference2DViewer(QGraphicsView):
     point_picked = Signal(float, float)
     point_selected = Signal(int)
     cursor_message = Signal(str)
+    reference_roi_changed = Signal(object)
+    reference_roi_finished = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -36,8 +39,13 @@ class Reference2DViewer(QGraphicsView):
         self._layer_items: dict[str, list[QGraphicsLineItem]] = {}
         self._overlay_items: list[QGraphicsItem] = []
         self._points: list[ControlPoint] = []
+        self._selected_point_id: int | None = None
         self._is_panning = False
         self._last_pan_pos = QPoint()
+        self._reference_roi: tuple[float, float, float, float] | None = None
+        self._reference_roi_mode = False
+        self._reference_roi_start: tuple[float, float] | None = None
+        self._reference_roi_previous: tuple[float, float, float, float] | None = None
 
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
@@ -74,6 +82,8 @@ class Reference2DViewer(QGraphicsView):
         )
         self.resetTransform()
         self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
+        self._update_geometry_opacity()
+        self._redraw_overlays()
 
     def set_layer_visibility(self, layer_name: str, visible: bool) -> None:
         if self._reference is None:
@@ -86,7 +96,24 @@ class Reference2DViewer(QGraphicsView):
         points: Iterable[ControlPoint],
         selected_point_id: int | None = None,
     ) -> None:
+        self._selected_point_id = selected_point_id
         self._points = list(points)
+        self._redraw_overlays()
+
+    def set_reference_roi(self, reference_roi: tuple[float, float, float, float] | None) -> None:
+        self._reference_roi = reference_roi
+        self._update_geometry_opacity()
+        self._redraw_overlays()
+
+    def set_reference_roi_mode(self, active: bool) -> None:
+        self._reference_roi_mode = active
+        self._reference_roi_start = None
+        if active:
+            self._reference_roi_previous = self._reference_roi
+        self._update_cursor_for_modifiers(Qt.NoModifier)
+        self._redraw_overlays()
+
+    def _redraw_overlays(self) -> None:
         for item in self._overlay_items:
             self._scene.removeItem(item)
         self._overlay_items.clear()
@@ -98,7 +125,7 @@ class Reference2DViewer(QGraphicsView):
             x, y = point.reference_xy
             scene = _world_to_scene((x, y))
             color = QColor(SUCCESS) if point.is_paired else QColor(WARNING)
-            if point.id == selected_point_id:
+            if point.id == self._selected_point_id:
                 color = QColor(ACCENT)
 
             shadow = QGraphicsEllipseItem(-6.0, -6.0, 12.0, 12.0)
@@ -116,7 +143,7 @@ class Reference2DViewer(QGraphicsView):
             self._scene.addItem(marker)
 
             selection_ring = None
-            if point.id == selected_point_id:
+            if point.id == self._selected_point_id:
                 selection_ring = QGraphicsEllipseItem(-9.0, -9.0, 18.0, 18.0)
                 selection_ring.setPos(scene)
                 selection_ring.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
@@ -159,12 +186,26 @@ class Reference2DViewer(QGraphicsView):
                 self._scene.addItem(endpoint)
                 self._overlay_items.append(endpoint)
 
+        if self._reference_roi is not None:
+            self._draw_reference_roi(self._reference_roi)
+
     def wheelEvent(self, event: QWheelEvent) -> None:
         factor = 1.15 if event.angleDelta().y() > 0 else 1.0 / 1.15
         self.scale(factor, factor)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self.setFocus()
+        if (
+            self._reference_roi_mode
+            and self._reference is not None
+            and event.button() == Qt.LeftButton
+        ):
+            self._reference_roi_start = _scene_to_world(self.mapToScene(event.pos()))
+            roi = (*self._reference_roi_start, *self._reference_roi_start)
+            self.reference_roi_changed.emit(roi)
+            event.accept()
+            return
+
         if event.button() == Qt.MiddleButton:
             self._is_panning = True
             self._last_pan_pos = event.pos()
@@ -198,6 +239,18 @@ class Reference2DViewer(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if (
+            self._reference_roi_mode
+            and self._reference is not None
+            and self._reference_roi_start is not None
+        ):
+            current = _scene_to_world(self.mapToScene(event.pos()))
+            roi = _normalize_roi((*self._reference_roi_start, *current))
+            self.reference_roi_changed.emit(roi)
+            self._update_cursor_for_modifiers(event.modifiers())
+            event.accept()
+            return
+
         if self._is_panning:
             delta = event.pos() - self._last_pan_pos
             self._last_pan_pos = event.pos()
@@ -215,6 +268,19 @@ class Reference2DViewer(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if (
+            self._reference_roi_mode
+            and event.button() == Qt.LeftButton
+            and self._reference_roi_start is not None
+        ):
+            current = _scene_to_world(self.mapToScene(event.pos()))
+            roi = _normalize_roi((*self._reference_roi_start, *current))
+            self._reference_roi_start = None
+            self.reference_roi_changed.emit(roi)
+            self.reference_roi_finished.emit()
+            event.accept()
+            return
+
         if event.button() in {Qt.MiddleButton, Qt.LeftButton} and self._is_panning:
             self._is_panning = False
             self._update_cursor_for_modifiers(event.modifiers())
@@ -223,6 +289,12 @@ class Reference2DViewer(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._reference_roi_mode and event.key() == Qt.Key_Escape:
+            self._reference_roi_start = None
+            self.reference_roi_changed.emit(None)
+            self.reference_roi_finished.emit()
+            event.accept()
+            return
         self._update_cursor_for_modifiers(event.modifiers())
         super().keyPressEvent(event)
 
@@ -243,10 +315,37 @@ class Reference2DViewer(QGraphicsView):
     def _update_cursor_for_modifiers(self, modifiers: object) -> None:
         if self._is_panning:
             return
+        if self._reference_roi_mode:
+            self.setCursor(Qt.CrossCursor)
+            return
         if modifiers & (Qt.ControlModifier | Qt.ShiftModifier):
             self.setCursor(Qt.CrossCursor)
         else:
             self.setCursor(Qt.ArrowCursor)
+
+    def _draw_reference_roi(self, roi: tuple[float, float, float, float]) -> None:
+        x0, y0, x1, y1 = _normalize_roi(roi)
+        rect_item = QGraphicsRectItem(x0, -y1, x1 - x0, y1 - y0)
+        rect_item.setPen(QPen(QColor(ACCENT), 1.5, Qt.DashLine))
+        rect_item.setBrush(QBrush(Qt.NoBrush))
+        self._scene.addItem(rect_item)
+        self._overlay_items.append(rect_item)
+
+    def _update_geometry_opacity(self) -> None:
+        if self._reference is None:
+            return
+        roi = _normalize_roi(self._reference_roi) if self._reference_roi is not None else None
+        for items in self._layer_items.values():
+            for item in items:
+                if roi is None:
+                    item.setOpacity(1.0)
+                    continue
+                line = item.line()
+                mid_x = (line.x1() + line.x2()) * 0.5
+                mid_y = (line.y1() + line.y2()) * 0.5
+                world_x, world_y = _scene_to_world(QPointF(mid_x, mid_y))
+                inside = roi[0] <= world_x <= roi[2] and roi[1] <= world_y <= roi[3]
+                item.setOpacity(1.0 if inside else 0.2)
 
 
 def _world_to_scene(point: tuple[float, float]) -> QPointF:
@@ -262,3 +361,12 @@ def _layer_color_lookup(layers: Iterable[LayerInfo]) -> dict[str, QColor]:
     for layer in layers:
         mapping[layer.name] = QColor.fromHsv((layer.color * 37) % 360, 140, 220)
     return mapping
+
+
+def _normalize_roi(
+    roi: tuple[float, float, float, float] | None,
+) -> tuple[float, float, float, float]:
+    if roi is None:
+        return (0.0, 0.0, 0.0, 0.0)
+    x0, y0, x1, y1 = roi
+    return (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))

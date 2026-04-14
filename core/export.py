@@ -44,6 +44,8 @@ def export_rectified_image(
     output_format: str = "tiff",
     resampling: str = "bilinear",
     clip_to_hull: bool = False,
+    clip_polygon: Sequence[Point2D] | None = None,
+    reference_roi: tuple[float, float, float, float] | None = None,
     reference_extents: tuple[Point2D, Point2D] | None = None,
     project_name: str = "Untitled",
     rms_error: float | None = None,
@@ -51,14 +53,21 @@ def export_rectified_image(
 ) -> RectificationExportResult:
     """Warp the source image into the metric reference plane and save metadata."""
 
-    bounds_min, bounds_max = reference_extents or _bounds_from_points(
-        [point.reference_xy for point in control_points if point.reference_xy is not None]
-    )
+    source_for_warp = source_image
+    if clip_polygon:
+        source_for_warp = _apply_source_polygon_mask(source_image, clip_polygon)
+
+    if reference_roi is not None:
+        bounds_min, bounds_max = _roi_bounds(reference_roi)
+    else:
+        bounds_min, bounds_max = reference_extents or _bounds_from_points(
+            [point.reference_xy for point in control_points if point.reference_xy is not None]
+        )
     width, height, reference_to_canvas = build_canvas(bounds_min, bounds_max, pixel_size)
     transform_to_canvas = reference_to_canvas @ homography_image_to_reference
     interpolation = INTERPOLATION_FLAGS.get(resampling, cv2.INTER_LINEAR)
     warped = cv2.warpPerspective(
-        source_image,
+        source_for_warp,
         transform_to_canvas,
         (width, height),
         flags=interpolation,
@@ -94,6 +103,8 @@ def export_rectified_image(
         "reference_to_canvas_matrix": reference_to_canvas.tolist(),
         "rms_error": rms_error,
         "warnings": list(warnings or []),
+        "clip_polygon": [[float(x), float(y)] for x, y in clip_polygon] if clip_polygon else None,
+        "reference_roi": list(reference_roi) if reference_roi is not None else None,
         "point_pairs": [
             {
                 "id": point.id,
@@ -168,6 +179,29 @@ def _apply_hull_mask(
     else:
         masked[mask == 0] = (0,) * masked.shape[2]
     return masked
+
+
+def _apply_source_polygon_mask(
+    source_image: np.ndarray,
+    clip_polygon: Sequence[Point2D],
+) -> np.ndarray:
+    polygon = np.asarray(clip_polygon, dtype=np.float32)
+    if len(polygon) < 3:
+        return source_image
+
+    mask = np.zeros(source_image.shape[:2], dtype=np.uint8)
+    cv2.fillPoly(mask, [np.round(polygon).astype(np.int32)], 255)
+    masked = source_image.copy()
+    if masked.ndim == 2:
+        masked[mask == 0] = 0
+    else:
+        masked[mask == 0] = (0,) * masked.shape[2]
+    return masked
+
+
+def _roi_bounds(reference_roi: tuple[float, float, float, float]) -> tuple[Point2D, Point2D]:
+    x0, y0, x1, y1 = reference_roi
+    return (min(x0, x1), min(y0, y1)), (max(x0, x1), max(y0, y1))
 
 
 def _bounds_from_points(points: Iterable[Point2D | None]) -> tuple[Point2D, Point2D]:

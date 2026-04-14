@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 import numpy as np
-from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -13,14 +13,19 @@ from PySide6.QtGui import (
     QImage,
     QKeyEvent,
     QMouseEvent,
+    QPainterPath,
     QPen,
     QPixmap,
+    QPolygonF,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsItem,
+    QGraphicsPathItem,
     QGraphicsPixmapItem,
+    QGraphicsPolygonItem,
+    QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
@@ -38,6 +43,8 @@ class ImageViewer(QGraphicsView):
     point_picked = Signal(float, float)
     point_selected = Signal(int)
     cursor_message = Signal(str)
+    clip_polygon_changed = Signal(object)
+    clip_polygon_finished = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -50,6 +57,11 @@ class ImageViewer(QGraphicsView):
         self._points: list[ControlPoint] = []
         self._is_panning = False
         self._last_pan_pos = QPoint()
+        self._selected_point_id: int | None = None
+        self._clip_polygon: list[tuple[float, float]] | None = None
+        self._clip_polygon_mode = False
+        self._clip_polygon_previous: list[tuple[float, float]] | None = None
+        self._clip_polygon_working: list[tuple[float, float]] = []
 
         self.setRenderHints(self.renderHints())
         self.setDragMode(QGraphicsView.NoDrag)
@@ -84,6 +96,38 @@ class ImageViewer(QGraphicsView):
         selected_point_id: int | None = None,
     ) -> None:
         self._points = list(points)
+        self._selected_point_id = selected_point_id
+        self._redraw_overlays()
+
+    def set_clip_polygon(self, polygon: list[tuple[float, float]] | None) -> None:
+        self._clip_polygon = polygon
+        if not self._clip_polygon_mode:
+            self._clip_polygon_working = list(polygon or [])
+        self._redraw_overlays()
+
+    def set_clip_polygon_mode(self, active: bool) -> None:
+        self._clip_polygon_mode = active
+        if active:
+            self._clip_polygon_previous = list(self._clip_polygon or [])
+            self._clip_polygon_working = list(self._clip_polygon or [])
+        else:
+            self._clip_polygon_working = list(self._clip_polygon or [])
+        self._redraw_overlays()
+        self._update_cursor_for_modifiers(Qt.NoModifier)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if (
+            self._clip_polygon_mode
+            and event.button() == Qt.LeftButton
+            and len(self._clip_polygon_working) >= 3
+        ):
+            self.clip_polygon_changed.emit(list(self._clip_polygon_working))
+            self.clip_polygon_finished.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def _redraw_overlays(self) -> None:
         for item in self._overlay_items:
             self._scene.removeItem(item)
         self._overlay_items.clear()
@@ -93,7 +137,7 @@ class ImageViewer(QGraphicsView):
                 continue
             x, y = point.image_xy
             color = QColor(SUCCESS) if point.is_paired else QColor(WARNING)
-            if point.id == selected_point_id:
+            if point.id == self._selected_point_id:
                 color = QColor(ACCENT)
 
             shadow = QGraphicsEllipseItem(-6.0, -6.0, 12.0, 12.0)
@@ -111,7 +155,7 @@ class ImageViewer(QGraphicsView):
             self._scene.addItem(marker)
 
             selection_ring = None
-            if point.id == selected_point_id:
+            if point.id == self._selected_point_id:
                 selection_ring = QGraphicsEllipseItem(-9.0, -9.0, 18.0, 18.0)
                 selection_ring.setPos(x, y)
                 selection_ring.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
@@ -134,12 +178,32 @@ class ImageViewer(QGraphicsView):
                 [item for item in (shadow, marker, selection_ring, label) if item is not None]
             )
 
+        self._draw_clip_polygon()
+
     def wheelEvent(self, event: QWheelEvent) -> None:
         factor = 1.15 if event.angleDelta().y() > 0 else 1.0 / 1.15
         self.scale(factor, factor)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self.setFocus()
+        if self._clip_polygon_mode and self._image_shape is not None:
+            if event.button() == Qt.LeftButton:
+                scene_pos = self.mapToScene(event.pos())
+                width = float(self._image_shape[1])
+                height = float(self._image_shape[0])
+                if 0.0 <= scene_pos.x() <= width and 0.0 <= scene_pos.y() <= height:
+                    self._clip_polygon_working.append((float(scene_pos.x()), float(scene_pos.y())))
+                    self.clip_polygon_changed.emit(list(self._clip_polygon_working))
+                    self._redraw_overlays()
+                    event.accept()
+                    return
+            if event.button() == Qt.RightButton and self._clip_polygon_working:
+                self._clip_polygon_working.pop()
+                self.clip_polygon_changed.emit(list(self._clip_polygon_working))
+                self._redraw_overlays()
+                event.accept()
+                return
+
         if event.button() == Qt.MiddleButton:
             self._is_panning = True
             self._last_pan_pos = event.pos()
@@ -197,6 +261,29 @@ class ImageViewer(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._clip_polygon_mode:
+            if (
+                event.key() in {Qt.Key_Return, Qt.Key_Enter}
+                and len(self._clip_polygon_working) >= 3
+            ):
+                self.clip_polygon_changed.emit(list(self._clip_polygon_working))
+                self.clip_polygon_finished.emit()
+                event.accept()
+                return
+            if event.key() == Qt.Key_Escape:
+                self._clip_polygon_working = list(self._clip_polygon_previous or [])
+                self.clip_polygon_changed.emit(
+                    list(self._clip_polygon_previous or []) if self._clip_polygon_previous else None
+                )
+                self.clip_polygon_finished.emit()
+                event.accept()
+                return
+            if event.key() == Qt.Key_Delete:
+                self._clip_polygon_working = []
+                self.clip_polygon_changed.emit(None)
+                self._redraw_overlays()
+                event.accept()
+                return
         self._update_cursor_for_modifiers(event.modifiers())
         super().keyPressEvent(event)
 
@@ -216,10 +303,54 @@ class ImageViewer(QGraphicsView):
     def _update_cursor_for_modifiers(self, modifiers: object) -> None:
         if self._is_panning:
             return
+        if self._clip_polygon_mode:
+            self.setCursor(Qt.CrossCursor)
+            return
         if modifiers & (Qt.ControlModifier | Qt.ShiftModifier):
             self.setCursor(Qt.CrossCursor)
         else:
             self.setCursor(Qt.ArrowCursor)
+
+    def _draw_clip_polygon(self) -> None:
+        polygon_points = (
+            self._clip_polygon_working if self._clip_polygon_mode else (self._clip_polygon or [])
+        )
+        if not polygon_points or self._image_shape is None:
+            return
+
+        polygon = QPolygonF([QPointF(x, y) for x, y in polygon_points])
+        if len(polygon_points) >= 3:
+            outside = QPainterPath()
+            outside.addRect(0.0, 0.0, float(self._image_shape[1]), float(self._image_shape[0]))
+            inside = QPainterPath()
+            inside.addPolygon(polygon)
+            outside = outside.subtracted(inside)
+            outside_item = QGraphicsPathItem(outside)
+            outside_item.setPen(QPen(Qt.NoPen))
+            outside_item.setBrush(QBrush(QColor(0, 0, 0, 76)))
+            self._scene.addItem(outside_item)
+            self._overlay_items.append(outside_item)
+
+            polygon_item = QGraphicsPolygonItem(polygon)
+            fill = QColor(ACCENT)
+            fill.setAlpha(26)
+            polygon_item.setBrush(QBrush(fill))
+        else:
+            polygon_item = QGraphicsPolygonItem(polygon)
+            polygon_item.setBrush(QBrush(Qt.NoBrush))
+
+        polygon_item.setPen(QPen(QColor(ACCENT), 1.5, Qt.DashLine))
+        self._scene.addItem(polygon_item)
+        self._overlay_items.append(polygon_item)
+
+        for x, y in polygon_points:
+            vertex = QGraphicsRectItem(-2.5, -2.5, 5.0, 5.0)
+            vertex.setPos(x, y)
+            vertex.setPen(QPen(QColor(ACCENT), 1.0))
+            vertex.setBrush(QBrush(QColor(ACCENT)))
+            vertex.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+            self._scene.addItem(vertex)
+            self._overlay_items.append(vertex)
 
 
 def _array_to_qimage(image: np.ndarray) -> QImage:

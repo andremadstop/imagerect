@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 Point2D = tuple[float, float]
+ReferenceRoi = tuple[float, float, float, float]
 
 
 def _now_iso() -> str:
@@ -19,6 +20,26 @@ def _coerce_point(raw: Any) -> Point2D | None:
     if raw is None:
         return None
     return (float(raw[0]), float(raw[1]))
+
+
+def _coerce_point_list(raw: Any) -> list[Point2D] | None:
+    if raw is None:
+        return None
+    points: list[Point2D] = []
+    for value in raw:
+        point = _coerce_point(value)
+        if point is not None:
+            points.append(point)
+    return points or None
+
+
+def _coerce_reference_roi(raw: Any) -> ReferenceRoi | None:
+    if raw is None:
+        return None
+    values = [float(value) for value in raw]
+    if len(values) != 4:
+        raise ValueError("reference_roi must contain exactly four values")
+    return (values[0], values[1], values[2], values[3])
 
 
 @dataclass(slots=True)
@@ -58,6 +79,8 @@ class ProjectData:
     export_settings: ExportSettings = field(default_factory=ExportSettings)
     units: str = "mm"
     working_plane: dict[str, Any] | None = None
+    clip_polygon: list[Point2D] | None = None
+    reference_roi: ReferenceRoi | None = None
     rms_error: float | None = None
     transform_matrix: list[list[float]] | None = None
     warnings: list[str] = field(default_factory=list)
@@ -148,6 +171,8 @@ class ProjectData:
             export_settings=export_settings,
             units=str(payload.get("units", "mm")),
             working_plane=payload.get("working_plane"),
+            clip_polygon=_coerce_point_list(payload.get("clip_polygon")),
+            reference_roi=_coerce_reference_roi(payload.get("reference_roi")),
             rms_error=(
                 float(payload["rms_error"]) if payload.get("rms_error") is not None else None
             ),

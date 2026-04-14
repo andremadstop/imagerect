@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from core.export import RectificationExportResult, export_rectified_image
 from core.image import load_image
-from core.project import ControlPoint, ProjectData
+from core.project import ControlPoint, Point2D, ProjectData, ReferenceRoi
 from core.reference2d import Reference2D, load_dxf
 from core.reference3d import (
     Reference3D,
@@ -107,8 +107,10 @@ class MainWindow(QMainWindow):
         self.project.reference_type = "dxf"
         self.project.units = self.reference_2d.units
         self.project.working_plane = None
+        self.project.reference_roi = None
         self.pending_plane_points = []
         self.plane_pick_mode = False
+        self._current_mode = "view"
         self._record_history()
         self._refresh_ui(status=f"Loaded reference {reference_path.name}")
 
@@ -131,6 +133,7 @@ class MainWindow(QMainWindow):
         self.project.reference_type = reference.source_type
         self.project.units = reference.units
         self.project.working_plane = None
+        self.project.reference_roi = None
         self._record_history()
         self._refresh_ui(status=f"Loaded 3D reference {reference_path.name}")
 
@@ -208,6 +211,8 @@ class MainWindow(QMainWindow):
             output_format=self.project.export_settings.output_format,
             resampling=self.project.export_settings.resampling,
             clip_to_hull=self.project.export_settings.clip_to_hull,
+            clip_polygon=self.project.clip_polygon,
+            reference_roi=self.project.reference_roi,
             reference_extents=reference_extents,
             project_name=self.project.name,
             rms_error=self.project.rms_error,
@@ -399,6 +404,10 @@ class MainWindow(QMainWindow):
         self.action_load_reference.setShortcut(QKeySequence("Ctrl+D"))
         self.action_load_reference3d = QAction("Load 3D Reference", self)
         self.action_load_reference3d.setShortcut(QKeySequence("Ctrl+Shift+D"))
+        self.action_image_roi = QAction("Image ROI", self)
+        self.action_image_roi.setCheckable(True)
+        self.action_reference_roi = QAction("DXF Region", self)
+        self.action_reference_roi.setCheckable(True)
         self.action_define_plane_from_points = QAction("Plane From 3 Points", self)
         self.action_define_plane_auto = QAction("Plane Auto", self)
         self.action_export = QAction("Export Rectified Image", self)
@@ -417,6 +426,8 @@ class MainWindow(QMainWindow):
         self.action_load_image.setIcon(make_symbol_icon("📷"))
         self.action_load_reference.setIcon(make_symbol_icon("📐"))
         self.action_load_reference3d.setIcon(make_symbol_icon("📦"))
+        self.action_image_roi.setIcon(make_symbol_icon("✂"))
+        self.action_reference_roi.setIcon(make_symbol_icon("▭"))
         self.action_define_plane_from_points.setIcon(make_symbol_icon("◫"))
         self.action_define_plane_auto.setIcon(make_symbol_icon("🧭"))
         self.action_export.setIcon(make_symbol_icon("💾"))
@@ -434,6 +445,10 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_load_reference3d)
         menu_file.addSeparator()
         menu_file.addAction(self.action_export)
+
+        menu_view = self.menuBar().addMenu("View")
+        menu_view.addAction(self.action_image_roi)
+        menu_view.addAction(self.action_reference_roi)
 
         menu_edit = self.menuBar().addMenu("Edit")
         menu_edit.addAction(self.action_undo)
@@ -455,6 +470,9 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.action_load_reference)
         toolbar.addAction(self.action_load_reference3d)
         toolbar.addSeparator()
+        toolbar.addAction(self.action_image_roi)
+        toolbar.addAction(self.action_reference_roi)
+        toolbar.addSeparator()
         toolbar.addAction(self.action_define_plane_from_points)
         toolbar.addAction(self.action_define_plane_auto)
         toolbar.addSeparator()
@@ -467,8 +485,12 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.image_viewer.point_picked.connect(self._handle_image_pick)
         self.image_viewer.point_selected.connect(self._set_selected_point)
+        self.image_viewer.clip_polygon_changed.connect(self._handle_clip_polygon_changed)
+        self.image_viewer.clip_polygon_finished.connect(self._finish_clip_polygon_mode)
         self.reference_viewer.point_picked.connect(self._handle_reference_pick)
         self.reference_viewer.point_selected.connect(self._set_selected_point)
+        self.reference_viewer.reference_roi_changed.connect(self._handle_reference_roi_changed)
+        self.reference_viewer.reference_roi_finished.connect(self._finish_reference_roi_mode)
         self.reference3d_viewer.point_picked.connect(self._handle_reference3d_pick)
         self.reference3d_viewer.point_selected.connect(self._set_selected_point)
         self.image_viewer.cursor_message.connect(self._show_cursor_message)
@@ -487,6 +509,8 @@ class MainWindow(QMainWindow):
         self.action_load_image.triggered.connect(self._open_image_dialog)
         self.action_load_reference.triggered.connect(self._open_reference_dialog)
         self.action_load_reference3d.triggered.connect(self._open_reference3d_dialog)
+        self.action_image_roi.toggled.connect(self._toggle_clip_polygon_mode)
+        self.action_reference_roi.toggled.connect(self._toggle_reference_roi_mode)
         self.action_define_plane_from_points.triggered.connect(self._start_plane_from_3_points)
         self.action_define_plane_auto.triggered.connect(self._define_plane_auto)
         self.action_export.triggered.connect(self._run_export_dialog)
@@ -553,6 +577,7 @@ class MainWindow(QMainWindow):
         self.reference_world_points = {}
         self.pending_plane_points = []
         self.plane_pick_mode = False
+        self._current_mode = "view"
         self._reset_history()
         self._refresh_ui(status="Started a new project")
 
@@ -788,6 +813,10 @@ class MainWindow(QMainWindow):
         )
         self.reference3d_viewer.set_temporary_points(self.pending_plane_points)
         self.image_viewer.set_points(self.project.points, self.selected_point_id)
+        self.image_viewer.set_clip_polygon(self.project.clip_polygon)
+        self.image_viewer.set_clip_polygon_mode(self.action_image_roi.isChecked())
+        self.reference_viewer.set_reference_roi(self.project.reference_roi)
+        self.reference_viewer.set_reference_roi_mode(self.action_reference_roi.isChecked())
         self.point_table.set_points(self.project.points, self.selected_point_id)
         self._populate_layer_list()
         self._sync_reference_mode()
@@ -853,6 +882,7 @@ class MainWindow(QMainWindow):
         if self.project.reference_type == "dxf" or self.reference_3d is None:
             self.reference_stack.setCurrentWidget(self.reference_viewer)
             self.layer_box.show()
+            self.action_reference_roi.setVisible(True)
             self.action_define_plane_from_points.setVisible(False)
             self.action_define_plane_auto.setVisible(False)
             self.workflow_label.setText(
@@ -861,6 +891,7 @@ class MainWindow(QMainWindow):
         else:
             self.reference_stack.setCurrentWidget(self.reference3d_viewer)
             self.layer_box.hide()
+            self.action_reference_roi.setVisible(False)
             self.action_define_plane_from_points.setVisible(True)
             self.action_define_plane_auto.setVisible(True)
             if self.reference_3d.working_plane is None:
@@ -876,6 +907,8 @@ class MainWindow(QMainWindow):
         enabled = self.reference_3d is not None
         self.action_define_plane_from_points.setEnabled(enabled)
         self.action_define_plane_auto.setEnabled(enabled)
+        self.action_image_roi.setEnabled(self.source_image is not None)
+        self.action_reference_roi.setEnabled(self.reference_2d is not None)
 
     def _show_dwg_help_dialog(self) -> None:
         QMessageBox.information(
@@ -899,6 +932,48 @@ class MainWindow(QMainWindow):
             "reference_roi": "Drag: define region | Esc: cancel",
         }
         return mode_hints.get(self._current_mode, mode_hints["view"])
+
+    def _toggle_clip_polygon_mode(self, checked: bool) -> None:
+        if checked and self.action_reference_roi.isChecked():
+            self.action_reference_roi.setChecked(False)
+        self._current_mode = "clip_polygon" if checked else "view"
+        self.image_viewer.set_clip_polygon_mode(checked)
+        if checked:
+            self.statusBar().showMessage(self._mode_hint_text(), 5000)
+
+    def _toggle_reference_roi_mode(self, checked: bool) -> None:
+        if checked and self.action_image_roi.isChecked():
+            self.action_image_roi.setChecked(False)
+        self._current_mode = "reference_roi" if checked else "view"
+        self.reference_viewer.set_reference_roi_mode(checked)
+        if checked:
+            self.statusBar().showMessage(self._mode_hint_text(), 5000)
+
+    def _handle_clip_polygon_changed(self, polygon: object) -> None:
+        if polygon is None:
+            self.project.clip_polygon = None
+        else:
+            self.project.clip_polygon = _coerce_polygon(polygon)
+        self.image_viewer.set_clip_polygon(self.project.clip_polygon)
+
+    def _finish_clip_polygon_mode(self) -> None:
+        if self.action_image_roi.isChecked():
+            self.action_image_roi.setChecked(False)
+        self._record_history()
+        self._refresh_ui(status="Updated image ROI")
+
+    def _handle_reference_roi_changed(self, roi: object) -> None:
+        if roi is None:
+            self.project.reference_roi = None
+        else:
+            self.project.reference_roi = _coerce_reference_roi(roi)
+        self.reference_viewer.set_reference_roi(self.project.reference_roi)
+
+    def _finish_reference_roi_mode(self) -> None:
+        if self.action_reference_roi.isChecked():
+            self.action_reference_roi.setChecked(False)
+        self._record_history()
+        self._refresh_ui(status="Updated DXF region")
 
     def _record_history(self) -> None:
         if self._restoring_history:
@@ -981,3 +1056,21 @@ class MainWindow(QMainWindow):
         mins = reference_xy.min(axis=0)
         maxs = reference_xy.max(axis=0)
         return (float(mins[0]), float(mins[1])), (float(maxs[0]), float(maxs[1]))
+
+
+def _coerce_polygon(raw: object) -> list[Point2D]:
+    if not isinstance(raw, list | tuple):
+        raise TypeError("clip polygon must be a list of 2D points")
+
+    polygon: list[Point2D] = []
+    for point in raw:
+        if not isinstance(point, list | tuple) or len(point) != 2:
+            raise TypeError("clip polygon points must contain exactly two coordinates")
+        polygon.append((float(point[0]), float(point[1])))
+    return polygon
+
+
+def _coerce_reference_roi(raw: object) -> ReferenceRoi:
+    if not isinstance(raw, list | tuple) or len(raw) != 4:
+        raise TypeError("reference ROI must contain exactly four coordinates")
+    return (float(raw[0]), float(raw[1]), float(raw[2]), float(raw[3]))
