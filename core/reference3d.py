@@ -67,13 +67,18 @@ def load_e57(path: str | Path) -> Reference3D:
     if pye57 is None:
         raise ImportError("pye57 is not installed. Install imagerect[3d] to load E57 files.")
 
-    document = pye57.E57(str(reference_path))
+    document: Any | None = None
     try:
+        document = pye57.E57(str(reference_path))
         if document.scan_count == 0:
             raise ValueError(f"E57 file contains no scans: {reference_path}")
         data = document.read_scan(0, ignore_missing_fields=True, transform=True)
+    except Exception as exc:
+        logger.exception("Failed to load E57 reference | path=%s", reference_path)
+        raise ValueError(f"E57-Datei konnte nicht gelesen werden: {exc}") from exc
     finally:
-        document.close()
+        if document is not None:
+            document.close()
 
     points = np.column_stack((data["cartesianX"], data["cartesianY"], data["cartesianZ"])).astype(
         np.float64
@@ -97,15 +102,20 @@ def load_obj(path: str | Path) -> Reference3D:
     if trimesh is None:
         raise ImportError("trimesh is not installed. Install imagerect[3d] to load OBJ files.")
 
-    mesh = cast(Any, trimesh.load(str(reference_path), force="mesh", process=False))
-    if isinstance(mesh, trimesh.Scene):
-        geometry = tuple(mesh.geometry.values())
-        if not geometry:
-            raise ValueError(f"OBJ scene is empty: {reference_path}")
-        mesh = trimesh.util.concatenate(geometry)
+    try:
+        mesh = cast(Any, trimesh.load(str(reference_path), force="mesh", process=False))
+        if isinstance(mesh, trimesh.Scene):
+            geometry = tuple(mesh.geometry.values())
+            if not geometry:
+                raise ValueError(f"OBJ scene is empty: {reference_path}")
+            mesh = trimesh.util.concatenate(geometry)
 
-    vertices = np.asarray(mesh.vertices, dtype=np.float64)
-    faces = np.asarray(mesh.faces, dtype=np.int32)
+        vertices = np.asarray(mesh.vertices, dtype=np.float64)
+        faces = np.asarray(mesh.faces, dtype=np.int32)
+    except Exception as exc:
+        logger.exception("Failed to load OBJ reference | path=%s", reference_path)
+        raise ValueError(f"OBJ-Datei konnte nicht gelesen werden: {exc}") from exc
+
     bounds_min, bounds_max = _compute_bounds(vertices)
     logger.info(
         "Loaded OBJ reference | path=%s | vertices=%d | faces=%d",

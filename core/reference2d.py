@@ -59,25 +59,33 @@ def load_dxf(path: str | Path) -> Reference2D:
         raise ValueError("DWG input is not supported directly in Phase 1. Convert it to DXF first.")
 
     logger.info("Loading 2D reference | path=%s", reference_path)
-    document = ezdxf.readfile(str(reference_path))
-    modelspace = document.modelspace()
-    layers = [
-        LayerInfo(
-            name=layer.dxf.name,
-            color=int(layer.color),
-            visible=not layer.is_off() and not layer.is_frozen(),
-        )
-        for layer in document.layers
-    ]
+    try:
+        document = ezdxf.readfile(str(reference_path))
+        modelspace = document.modelspace()
+        layers = [
+            LayerInfo(
+                name=layer.dxf.name,
+                color=int(layer.color),
+                visible=not layer.is_off() and not layer.is_frozen(),
+            )
+            for layer in document.layers
+        ]
 
-    segments: list[Segment] = []
-    vertices: list[Point2D] = []
-    for entity in modelspace:
-        _extract_entity(entity, segments, vertices)
+        segments: list[Segment] = []
+        vertices: list[Point2D] = []
+        for entity in modelspace:
+            _extract_entity(entity, segments, vertices)
 
-    extents_min, extents_max = _compute_extents(vertices)
-    units = _units_from_code(int(document.header.get("$INSUNITS", 0)))
-    crs_epsg = _extract_crs_epsg(document, reference_path)
+        extents_min, extents_max = _compute_extents(vertices)
+        units = _units_from_code(int(document.header.get("$INSUNITS", 0)))
+        crs_epsg = _extract_crs_epsg(document, reference_path)
+    except (ezdxf.DXFStructureError, ezdxf.DXFValueError, UnicodeDecodeError, OSError) as exc:
+        logger.exception("Malformed DXF rejected | path=%s", reference_path)
+        raise ValueError(f"DXF-Datei konnte nicht gelesen werden: {exc}") from exc
+    except Exception as exc:
+        logger.exception("Unexpected DXF load failure | path=%s", reference_path)
+        raise ValueError(f"DXF-Datei konnte nicht gelesen werden: {exc}") from exc
+
     logger.info(
         "Loaded 2D reference | path=%s | layers=%d | segments=%d | units=%s | epsg=%s",
         reference_path,

@@ -569,6 +569,7 @@ class MainWindow(QMainWindow):
         self.action_redo.setShortcut(QKeySequence.Redo)
         self.action_open_log_directory = QAction("Log-Ordner öffnen", self)
         self.action_export_diagnose_package = QAction("Diagnose-Paket exportieren...", self)
+        self._apply_action_descriptions()
 
         self.action_load_image.setIcon(make_symbol_icon("📷"))
         self.action_lens_correction.setIcon(make_symbol_icon("🔍"))
@@ -642,6 +643,39 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.action_redo)
         self.addToolBar(toolbar)
 
+    def _apply_action_descriptions(self) -> None:
+        descriptions = {
+            self.action_new: "Start a new empty project",
+            self.action_open_project: "Open a saved ImageRect project",
+            self.action_save_project: "Save the current project",
+            self.action_save_project_as: "Save the current project under a new name",
+            self.action_load_image: "Load a source image from disk",
+            self.action_lens_correction: "Open the lens correction dialog for the active image",
+            self.action_load_reference: "Load a DXF reference drawing",
+            self.action_load_reference3d: "Load an E57 point cloud or OBJ mesh",
+            self.action_image_roi: "Draw or edit the image clip polygon",
+            self.action_reference_roi: "Draw or edit the DXF export region",
+            self.action_fit_reference_view: "Fit the full DXF reference to the viewport",
+            self.action_fit_reference_roi_view: "Fit the current DXF ROI to the viewport",
+            self.action_fit_image_view: "Fit the source image to the viewport",
+            self.action_define_plane_from_points: "Define a 3D working plane from three picks",
+            self.action_define_plane_auto: "Estimate a 3D working plane automatically",
+            self.action_export: "Export the rectified image or mosaic",
+            self.action_toggle_project_panel: "Show or hide the project settings panel",
+            self.action_delete_point: "Delete the selected control point",
+            self.action_move_up: "Move the selected point one row up",
+            self.action_move_down: "Move the selected point one row down",
+            self.action_undo: "Undo the last project edit",
+            self.action_redo: "Redo the previously undone project edit",
+            self.action_open_log_directory: "Open the local ImageRect log folder",
+            self.action_export_diagnose_package: (
+                "Export logs, system info, and the current project"
+            ),
+        }
+        for action, text in descriptions.items():
+            action.setStatusTip(text)
+            action.setToolTip(text)
+
     def _connect_signals(self) -> None:
         self.image_viewer.point_picked.connect(self._handle_image_pick)
         self.image_viewer.point_selected.connect(self._set_selected_point)
@@ -702,14 +736,17 @@ class MainWindow(QMainWindow):
             "Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.ppm)",
         )
         if file_name:
-            self.load_image_file(file_name)
+            try:
+                self.load_image_file(file_name)
+            except Exception as exc:
+                self._show_file_action_error("Bild laden fehlgeschlagen", exc)
 
     def _open_lens_dialog(self) -> None:
         if self.source_image_original is None:
             self.statusBar().showMessage("Load an image before configuring lens correction", 5000)
             return
 
-        image_path = Path(self.project.image_path) if self.project.image_path else None
+        image_path = self.project.resolve_active_image_path()
         dialog = LensDialog(
             image=self.source_image_original,
             image_path=image_path,
@@ -741,7 +778,10 @@ class MainWindow(QMainWindow):
             "DXF Files (*.dxf);;DWG Files — shows help (*.dwg)",
         )
         if file_name:
-            self.load_reference_file(file_name)
+            try:
+                self.load_reference_file(file_name)
+            except Exception as exc:
+                self._show_file_action_error("DXF laden fehlgeschlagen", exc)
 
     def _open_reference3d_dialog(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(
@@ -751,7 +791,10 @@ class MainWindow(QMainWindow):
             "3D Reference (*.e57 *.obj)",
         )
         if file_name:
-            self.load_3d_reference_file(file_name)
+            try:
+                self.load_3d_reference_file(file_name)
+            except Exception as exc:
+                self._show_file_action_error("3D-Referenz laden fehlgeschlagen", exc)
 
     def _open_project_dialog(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(
@@ -761,7 +804,14 @@ class MainWindow(QMainWindow):
             "ImageRect Project (*.imagerect.json)",
         )
         if file_name:
-            self.load_project_file(file_name)
+            try:
+                self.load_project_file(file_name)
+            except Exception as exc:
+                self._show_file_action_error("Projekt laden fehlgeschlagen", exc)
+
+    def _show_file_action_error(self, title: str, exc: Exception) -> None:
+        logger.exception("%s | error=%s", title, exc)
+        QMessageBox.critical(self, title, str(exc))
 
     def _run_export_dialog(self) -> None:
         try:
@@ -1054,9 +1104,10 @@ class MainWindow(QMainWindow):
             return None
 
     def _load_image_entry_source(self, entry: ImageEntry) -> np.ndarray:
-        if not entry.path:
+        image_path = self.project.resolve_image_entry_path(entry)
+        if image_path is None:
             raise ValueError("Image entry has no source path.")
-        image = load_image(entry.path)
+        image = load_image(image_path)
         profile = self._lens_profile_from_correction(entry.lens_correction)
         if profile is None:
             return image
@@ -1092,7 +1143,9 @@ class MainWindow(QMainWindow):
             if entry.transform_matrix is None or len(paired_points) < 4:
                 warnings.append(f"Skipped {label}: needs at least four paired points")
                 continue
-            image_path = Path(entry.path)
+            image_path = self.project.resolve_image_entry_path(entry)
+            if image_path is None:
+                continue
             if not image_path.exists():
                 warnings.append(f"Skipped {label}: source image not found")
                 continue
@@ -1197,12 +1250,13 @@ class MainWindow(QMainWindow):
     def _load_current_image_asset(self) -> None:
         self.source_image_original = None
         self.source_image = None
-        if self.project.image_path and Path(self.project.image_path).exists():
-            self.source_image_original = load_image(self.project.image_path)
+        image_path = self.project.resolve_active_image_path()
+        if image_path is not None and image_path.exists():
+            self.source_image_original = load_image(image_path)
             self._refresh_source_image()
             if self.project.images:
                 self.project.images[self.project.active_image_index].gps_pose = extract_gps_pose(
-                    self.project.image_path
+                    image_path
                 )
 
     def _rough_gps_markers(self) -> list[tuple[str, tuple[float, float]]]:
@@ -1359,6 +1413,7 @@ class MainWindow(QMainWindow):
         self._update_window_title()
         self._update_history_actions()
         self._update_3d_actions()
+        self._update_export_action()
         if status is not None:
             self.statusBar().showMessage(status, 5000)
 
@@ -1368,11 +1423,12 @@ class MainWindow(QMainWindow):
         self.source_image_original = None
         self.reference_2d = None
         self.reference_3d = None
-        if self.project.image_path and Path(self.project.image_path).exists():
-            self.source_image_original = load_image(self.project.image_path)
+        image_path = self.project.resolve_active_image_path()
+        if image_path is not None and image_path.exists():
+            self.source_image_original = load_image(image_path)
             self._refresh_source_image()
 
-        reference_path = Path(self.project.reference_path) if self.project.reference_path else None
+        reference_path = self.project.resolve_reference_path()
         if reference_path and reference_path.exists():
             if self.project.reference_type == "dxf":
                 self.reference_2d = load_dxf(reference_path)
@@ -1449,6 +1505,32 @@ class MainWindow(QMainWindow):
         self.action_fit_reference_roi_view.setEnabled(
             self.reference_2d is not None and self.project.reference_roi is not None
         )
+
+    def _export_action_state(self) -> tuple[bool, str]:
+        self.project.ensure_image_entries()
+        if not any(entry.path for entry in self.project.images):
+            return False, "Export requires at least one loaded image."
+        if not self.project.reference_path:
+            return False, "Export requires a loaded reference."
+        for entry in self.project.images:
+            if not entry.path:
+                continue
+            paired_points = [point for point in entry.points if point.is_paired]
+            if entry.transform_matrix is None or len(paired_points) < 4:
+                continue
+            image_path = self.project.resolve_image_entry_path(entry)
+            if image_path is not None and image_path.exists():
+                return True, "Export the rectified image or mosaic."
+        return (
+            False,
+            "Export requires at least one image with four paired points and a solved homography.",
+        )
+
+    def _update_export_action(self) -> None:
+        enabled, description = self._export_action_state()
+        self.action_export.setEnabled(enabled)
+        self.action_export.setStatusTip(description)
+        self.action_export.setToolTip(description)
 
     def _show_dwg_help_dialog(self) -> None:
         QMessageBox.information(
@@ -1669,8 +1751,8 @@ class MainWindow(QMainWindow):
         if self.reference_3d is not None and self.reference_3d.working_plane is not None:
             try:
                 return reference_plane_extents(self.reference_3d)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Falling back to paired-point extents | error=%s", exc)
         paired_points = self.project.paired_points()
         if not paired_points:
             raise ValueError("No reference extents available for export.")

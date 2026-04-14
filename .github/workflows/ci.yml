@@ -46,3 +46,19 @@ jobs:
         run: QT_QPA_PLATFORM=offscreen pytest -v
       - name: Smoke test
         run: QT_QPA_PLATFORM=offscreen python main.py --smoke-test
+
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+      - name: Bandit
+        run: bandit -c pyproject.toml -r core ui main.py
+      - name: pip-audit
+        run: pip-audit . --strict

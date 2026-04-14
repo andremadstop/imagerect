@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from tests.golden_case import (  # noqa: E402
     export_golden_case,
     golden_dir,
     golden_project_path,
+    golden_reference_path,
     golden_source_path,
 )
 
@@ -24,6 +26,9 @@ from tests.golden_case import (  # noqa: E402
 def main() -> None:
     output_dir = golden_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(
+        REPO_ROOT / "tests" / "sample_data" / "synthetic_reference.dxf", golden_reference_path()
+    )
 
     source_image = build_golden_source_image()
     if not cv2.imwrite(str(golden_source_path()), source_image):

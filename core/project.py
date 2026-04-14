@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ UNIT_TO_MM = {
     "in": 25.4,
     "ft": 304.8,
 }
+logger = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
@@ -136,6 +138,7 @@ class ProjectData:
     created: str = field(default_factory=_now_iso)
     modified: str = field(default_factory=_now_iso)
     _next_id: int = field(default=1, repr=False)
+    _project_file: str | None = field(default=None, repr=False, compare=False)
 
     def touch(self) -> None:
         self.modified = _now_iso()
@@ -183,9 +186,54 @@ class ProjectData:
     def paired_points(self) -> list[ControlPoint]:
         return [point for point in self.points if point.is_paired]
 
+    @property
+    def project_file(self) -> Path | None:
+        if self._project_file is None:
+            return None
+        return Path(self._project_file)
+
+    @property
+    def project_dir(self) -> Path | None:
+        project_file = self.project_file
+        if project_file is None:
+            return None
+        return project_file.parent
+
+    def set_project_file(self, path: Path | None) -> None:
+        self._project_file = str(path.resolve()) if path is not None else None
+
+    def validate_asset_paths(self, project_file: Path) -> None:
+        self.set_project_file(project_file)
+        for field_name, raw_path in [
+            ("image_path", self.image_path),
+            ("reference_path", self.reference_path),
+            *[(f"images[{index}].path", entry.path) for index, entry in enumerate(self.images)],
+        ]:
+            _validate_project_asset_path(raw_path, project_file, field_name)
+
+    def resolve_asset_path(self, raw_path: str) -> Path:
+        return _resolve_project_asset_path(raw_path, self.project_file)
+
+    def resolve_active_image_path(self) -> Path | None:
+        if not self.image_path:
+            return None
+        return self.resolve_asset_path(self.image_path)
+
+    def resolve_reference_path(self) -> Path | None:
+        if not self.reference_path:
+            return None
+        return self.resolve_asset_path(self.reference_path)
+
+    def resolve_image_entry_path(self, entry: ImageEntry) -> Path | None:
+        if not entry.path:
+            return None
+        return self.resolve_asset_path(entry.path)
+
     def clone(self) -> ProjectData:
         self.sync_to_active_image()
-        return self.from_dict(self.to_dict())
+        clone = self.from_dict(self.to_dict())
+        clone._project_file = self._project_file
+        return clone
 
     def ensure_image_entries(self) -> None:
         if self.images:
@@ -241,6 +289,7 @@ class ProjectData:
         self.sync_to_active_image()
         payload = asdict(self)
         payload["_next_id"] = self._next_id
+        payload.pop("_project_file", None)
         return payload
 
     @classmethod
@@ -342,7 +391,40 @@ class ProjectData:
             json.dumps(self.to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        self.set_project_file(path)
 
     @classmethod
     def load(cls, path: Path) -> ProjectData:
-        return cls.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        project = cls.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        project.validate_asset_paths(path)
+        return project
+
+
+def _resolve_project_asset_path(raw_path: str, project_file: Path | None) -> Path:
+    candidate = Path(raw_path)
+    if candidate.is_absolute() or project_file is None:
+        return candidate
+    return (project_file.parent / candidate).resolve()
+
+
+def _validate_project_asset_path(raw_path: str, project_file: Path, field_name: str) -> None:
+    if not raw_path:
+        return
+
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        logger.warning(
+            "Absolute path retained in project file | project=%s | field=%s | path=%s",
+            project_file,
+            field_name,
+            candidate,
+        )
+        return
+
+    project_dir = project_file.parent.resolve()
+    resolved_parent = (project_dir / candidate.parent).resolve(strict=False)
+    resolved_target = (project_dir / candidate).resolve(strict=False)
+    if not resolved_parent.is_relative_to(project_dir) or not resolved_target.is_relative_to(
+        project_dir
+    ):
+        raise ValueError(f"Projektpfad verlässt das Projektverzeichnis ({field_name}): {raw_path}")

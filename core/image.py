@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import logging
+import warnings
 from pathlib import Path
 
 import cv2
 import numpy as np
+from PIL import Image as PILImage
+from PIL import UnidentifiedImageError
+
+logger = logging.getLogger(__name__)
+MAX_IMAGE_PIXELS = 500_000_000
+PILImage.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 
 
 def load_image(path: str | Path) -> np.ndarray:
@@ -15,9 +23,10 @@ def load_image(path: str | Path) -> np.ndarray:
     if not image_path.exists():
         raise FileNotFoundError(f"Image not found: {image_path}")
 
+    _probe_image_size(image_path)
     image = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
     if image is None:
-        raise ValueError(f"Could not decode image: {image_path}")
+        raise ValueError(f"Bild konnte nicht gelesen werden: {image_path}")
     return image
 
 
@@ -64,3 +73,20 @@ def undistort(
     if roi_width > 0 and roi_height > 0:
         return undistorted[y : y + roi_height, x : x + roi_width]
     return undistorted
+
+
+def _probe_image_size(image_path: Path) -> None:
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", PILImage.DecompressionBombWarning)
+            with PILImage.open(image_path) as image:
+                _ = image.size
+    except (PILImage.DecompressionBombError, PILImage.DecompressionBombWarning):
+        logger.warning(
+            "Rejected oversized image during safety probe | path=%s | max_pixels=%d",
+            image_path,
+            MAX_IMAGE_PIXELS,
+        )
+        raise ValueError("Bild zu groß. Limit: 500 Megapixel.") from None
+    except (UnidentifiedImageError, OSError):
+        logger.debug("Pillow image probe skipped | path=%s", image_path)

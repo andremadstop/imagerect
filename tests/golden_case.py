@@ -61,6 +61,10 @@ def golden_source_path() -> Path:
     return golden_dir() / "golden_source.png"
 
 
+def golden_reference_path() -> Path:
+    return golden_dir() / "golden_reference.dxf"
+
+
 def build_golden_source_image() -> np.ndarray:
     plane = np.zeros((301, 401, 3), dtype=np.uint8)
     plane[:] = (240, 240, 240)
@@ -106,7 +110,7 @@ def build_golden_project() -> ProjectData:
     result = build_golden_solver_result()
     project = ProjectData(name="golden")
     project.image_path = "golden_source.png"
-    project.reference_path = "../sample_data/synthetic_reference.dxf"
+    project.reference_path = "golden_reference.dxf"
     project.reference_type = "dxf"
     project.units = "mm"
     project.points = build_golden_control_points()
