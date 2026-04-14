@@ -79,6 +79,7 @@ class ProjectData:
     export_settings: ExportSettings = field(default_factory=ExportSettings)
     units: str = "mm"
     working_plane: dict[str, Any] | None = None
+    lens_correction: dict[str, Any] | None = None
     clip_polygon: list[Point2D] | None = None
     reference_roi: ReferenceRoi | None = None
     rms_error: float | None = None
@@ -171,6 +172,7 @@ class ProjectData:
             export_settings=export_settings,
             units=str(payload.get("units", "mm")),
             working_plane=payload.get("working_plane"),
+            lens_correction=payload.get("lens_correction"),
             clip_polygon=_coerce_point_list(payload.get("clip_polygon")),
             reference_roi=_coerce_reference_roi(payload.get("reference_roi")),
             rms_error=(

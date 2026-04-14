@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from core.export import RectificationExportResult, export_rectified_image
 from core.image import load_image
+from core.lens import LensProfile, apply_lens_correction, lens_profile_from_dict
 from core.project import ControlPoint, Point2D, ProjectData, ReferenceRoi
 from core.reference2d import Reference2D, load_dxf
 from core.reference3d import (
@@ -47,6 +48,7 @@ from core.reference3d import (
 from core.transform import HomographyResult, solve_planar_homography
 from ui.export_dialog import ExportDialog
 from ui.image_viewer import ImageViewer
+from ui.lens_dialog import LensDialog
 from ui.point_table import PointTable
 from ui.reference2d_viewer import Reference2DViewer
 from ui.reference3d_viewer import Reference3DViewer
@@ -70,6 +72,7 @@ class MainWindow(QMainWindow):
         self.project_path: Path | None = None
         self.reference_2d: Reference2D | None = None
         self.reference_3d: Reference3D | None = None
+        self.source_image_original: np.ndarray | None = None
         self.source_image: np.ndarray | None = None
         self.transform_result: HomographyResult | None = None
         self.selected_point_id: int | None = None
@@ -88,7 +91,9 @@ class MainWindow(QMainWindow):
 
     def load_image_file(self, path: str | Path) -> None:
         image_path = Path(path)
-        self.source_image = load_image(image_path)
+        self.source_image_original = load_image(image_path)
+        self.project.lens_correction = None
+        self._refresh_source_image()
         self.project.image_path = str(image_path)
         if self.project.name == "Untitled":
             self.project.name = image_path.stem
@@ -275,6 +280,7 @@ class MainWindow(QMainWindow):
 
         self.project = ProjectData(name="synthetic_smoke")
         self.project_path = None
+        self.source_image_original = None
         self.source_image = None
         self.reference_2d = None
         self.reference_3d = None
@@ -400,6 +406,7 @@ class MainWindow(QMainWindow):
         self.action_save_project_as.setShortcut(QKeySequence.SaveAs)
         self.action_load_image = QAction("Load Image", self)
         self.action_load_image.setShortcut(QKeySequence("Ctrl+I"))
+        self.action_lens_correction = QAction("Lens Correction", self)
         self.action_load_reference = QAction("Load DXF", self)
         self.action_load_reference.setShortcut(QKeySequence("Ctrl+D"))
         self.action_load_reference3d = QAction("Load 3D Reference", self)
@@ -424,6 +431,7 @@ class MainWindow(QMainWindow):
         self.action_redo.setShortcut(QKeySequence.Redo)
 
         self.action_load_image.setIcon(make_symbol_icon("📷"))
+        self.action_lens_correction.setIcon(make_symbol_icon("🔍"))
         self.action_load_reference.setIcon(make_symbol_icon("📐"))
         self.action_load_reference3d.setIcon(make_symbol_icon("📦"))
         self.action_image_roi.setIcon(make_symbol_icon("✂"))
@@ -441,6 +449,7 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_save_project_as)
         menu_file.addSeparator()
         menu_file.addAction(self.action_load_image)
+        menu_file.addAction(self.action_lens_correction)
         menu_file.addAction(self.action_load_reference)
         menu_file.addAction(self.action_load_reference3d)
         menu_file.addSeparator()
@@ -467,6 +476,7 @@ class MainWindow(QMainWindow):
         toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         toolbar.setIconSize(icon_size())
         toolbar.addAction(self.action_load_image)
+        toolbar.addAction(self.action_lens_correction)
         toolbar.addAction(self.action_load_reference)
         toolbar.addAction(self.action_load_reference3d)
         toolbar.addSeparator()
@@ -507,6 +517,7 @@ class MainWindow(QMainWindow):
         self.action_save_project.triggered.connect(lambda checked=False: self.save_project_file())
         self.action_save_project_as.triggered.connect(self.save_project_as)
         self.action_load_image.triggered.connect(self._open_image_dialog)
+        self.action_lens_correction.triggered.connect(self._open_lens_dialog)
         self.action_load_reference.triggered.connect(self._open_reference_dialog)
         self.action_load_reference3d.triggered.connect(self._open_reference3d_dialog)
         self.action_image_roi.toggled.connect(self._toggle_clip_polygon_mode)
@@ -529,6 +540,27 @@ class MainWindow(QMainWindow):
         )
         if file_name:
             self.load_image_file(file_name)
+
+    def _open_lens_dialog(self) -> None:
+        if self.source_image_original is None:
+            self.statusBar().showMessage("Load an image before configuring lens correction", 5000)
+            return
+
+        image_path = Path(self.project.image_path) if self.project.image_path else None
+        dialog = LensDialog(
+            image=self.source_image_original,
+            image_path=image_path,
+            current_profile=self._current_lens_profile(),
+            parent=self,
+        )
+        if dialog.exec() == 0:
+            return
+
+        self.project.lens_correction = dialog.lens_correction_payload()
+        self._refresh_source_image()
+        self._record_history()
+        self._recompute_transform()
+        self._refresh_ui(status="Applied lens correction; verify image control points")
 
     def _open_reference_dialog(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(
@@ -571,6 +603,7 @@ class MainWindow(QMainWindow):
         self.project_path = None
         self.reference_2d = None
         self.reference_3d = None
+        self.source_image_original = None
         self.source_image = None
         self.transform_result = None
         self.selected_point_id = None
@@ -839,10 +872,12 @@ class MainWindow(QMainWindow):
 
     def _reload_assets_from_project(self) -> None:
         self.source_image = None
+        self.source_image_original = None
         self.reference_2d = None
         self.reference_3d = None
         if self.project.image_path and Path(self.project.image_path).exists():
-            self.source_image = load_image(self.project.image_path)
+            self.source_image_original = load_image(self.project.image_path)
+            self._refresh_source_image()
 
         reference_path = Path(self.project.reference_path) if self.project.reference_path else None
         if reference_path and reference_path.exists():
@@ -907,6 +942,7 @@ class MainWindow(QMainWindow):
         enabled = self.reference_3d is not None
         self.action_define_plane_from_points.setEnabled(enabled)
         self.action_define_plane_auto.setEnabled(enabled)
+        self.action_lens_correction.setEnabled(self.source_image_original is not None)
         self.action_image_roi.setEnabled(self.source_image is not None)
         self.action_reference_roi.setEnabled(self.reference_2d is not None)
 
@@ -1029,6 +1065,32 @@ class MainWindow(QMainWindow):
         bounds_max = source_points.max(axis=0)
         span = np.linalg.norm(bounds_max - bounds_min)
         return max(float(span) * 0.02, 1e-6)
+
+    def _current_lens_profile(self) -> LensProfile | None:
+        correction = self.project.lens_correction
+        if not correction or not correction.get("applied"):
+            return None
+
+        profile_payload = correction.get("profile")
+        if not isinstance(profile_payload, dict):
+            return None
+
+        try:
+            return lens_profile_from_dict(profile_payload)
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _refresh_source_image(self) -> None:
+        if self.source_image_original is None:
+            self.source_image = None
+            return
+
+        profile = self._current_lens_profile()
+        if profile is None:
+            self.source_image = self.source_image_original.copy()
+            return
+
+        self.source_image = apply_lens_correction(self.source_image_original, profile)
 
     def _safe_plane_extents(self) -> tuple[tuple[float, float], tuple[float, float]] | None:
         if self.reference_3d is None or self.reference_3d.working_plane is None:

@@ -1,0 +1,16 @@
+[
+  {"name": "DJI Mavic 3", "focal_length_mm": 24, "sensor_width_mm": 17.3, "k1": -0.08, "k2": 0.01, "p1": 0, "p2": 0, "k3": 0},
+  {"name": "DJI Mini 4 Pro", "focal_length_mm": 24, "sensor_width_mm": 9.4, "k1": -0.12, "k2": 0.02, "p1": 0, "p2": 0, "k3": 0},
+  {"name": "DJI Air 3", "focal_length_mm": 24, "sensor_width_mm": 9.4, "k1": -0.10, "k2": 0.015, "p1": 0, "p2": 0, "k3": 0},
+  {"name": "DJI Phantom 4 Pro", "focal_length_mm": 24, "sensor_width_mm": 13.2, "k1": -0.09, "k2": 0.012, "p1": 0, "p2": 0, "k3": 0},
+  {"name": "DJI FC3582", "focal_length_mm": 24, "sensor_width_mm": 9.4, "k1": -0.10, "k2": 0.015, "p1": 0, "p2": 0, "k3": 0},
+  {"name": "Sony A7 24mm", "focal_length_mm": 24, "sensor_width_mm": 35.6, "k1": -0.05, "k2": 0.005, "p1": 0, "p2": 0, "k3": 0},
+  {"name": "Sony A7 35mm", "focal_length_mm": 35, "sensor_width_mm": 35.6, "k1": -0.03, "k2": 0.003, "p1": 0, "p2": 0, "k3": 0},
+  {"name": "Canon EOS R 24mm", "focal_length_mm": 24, "sensor_width_mm": 36.0, "k1": -0.04, "k2": 0.004, "p1": 0, "p2": 0, "k3": 0},
+  {"name": "Canon EOS R 35mm", "focal_length_mm": 35, "sensor_width_mm": 36.0, "k1": -0.025, "k2": 0.002, "p1": 0, "p2": 0, "k3": 0},
+  {"name": "Nikon Z6 24mm", "focal_length_mm": 24, "sensor_width_mm": 35.9, "k1": -0.045, "k2": 0.004, "p1": 0, "p2": 0, "k3": 0},
+  {"name": "Fujifilm X-T4 18mm", "focal_length_mm": 18, "sensor_width_mm": 23.5, "k1": -0.06, "k2": 0.008, "p1": 0, "p2": 0, "k3": 0},
+  {"name": "iPhone 15 Pro", "focal_length_mm": 24, "sensor_width_mm": 9.8, "k1": -0.09, "k2": 0.01, "p1": 0, "p2": 0, "k3": 0},
+  {"name": "iPhone 14 Pro", "focal_length_mm": 24, "sensor_width_mm": 9.8, "k1": -0.095, "k2": 0.011, "p1": 0, "p2": 0, "k3": 0},
+  {"name": "Samsung S24 Ultra", "focal_length_mm": 23, "sensor_width_mm": 9.6, "k1": -0.10, "k2": 0.013, "p1": 0, "p2": 0, "k3": 0}
+]
