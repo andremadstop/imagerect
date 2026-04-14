@@ -148,6 +148,10 @@ Tasks werden von mir (Andre) oder Claude geschrieben. Codex führt sie aus.
 - **Pre-commit Hooks**: Liegen in `.pre-commit-config.yaml`, installiert
   via `.venv/bin/pre-commit install` — bei frisch geklontem Repo
   erneut ausführen.
+- **Wayland Qt-Warnung**: `"This plugin supports grabbing the mouse only
+  for popup windows"` wurde im Repo per `grabMouse`-Grep geprüft und
+  kommt aktuell **nicht** aus ImageRect-Code. Bis zum Gegenbeweis als
+  bekannte, harmlose Qt/Wayland-Warnung behandeln.
 - **tests/sample_data**: Echte DWG und JPG nicht committen (sind in
   `.gitignore`). Nur `synthetic_reference.dxf` ist getrackt.
 - **Windows-Installer**: Nutzt Inno Setup via `installer/imagerect.iss`.
