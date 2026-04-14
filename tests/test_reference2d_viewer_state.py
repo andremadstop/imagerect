@@ -48,6 +48,34 @@ def test_set_reference_none_clears_but_keeps_view(qtbot: Any) -> None:
     assert viewer.scene().items() == []
 
 
+def test_first_roi_triggers_autozoom(monkeypatch: Any, qtbot: Any) -> None:
+    reference = _reference(100.0, 100.0)
+    viewer = _viewer(qtbot)
+    viewer.set_reference(reference)
+
+    fit_calls: list[object] = []
+
+    def record_fit_in_view(self: Reference2DViewer, *args: object) -> None:
+        fit_calls.append(args)
+
+    monkeypatch.setattr(Reference2DViewer, "fitInView", record_fit_in_view)
+
+    viewer.set_reference_roi_mode(True)
+    viewer.set_reference_roi((10.0, 10.0, 60.0, 60.0))
+
+    assert fit_calls == []
+
+    viewer.set_reference_roi_mode(False)
+    viewer.set_reference(reference)
+
+    assert len(fit_calls) == 1
+
+    viewer.set_reference_roi((20.0, 20.0, 50.0, 50.0))
+    viewer.set_reference(reference)
+
+    assert len(fit_calls) == 1
+
+
 def _viewer(qtbot: Any) -> Reference2DViewer:
     viewer = Reference2DViewer()
     viewer.resize(640, 480)

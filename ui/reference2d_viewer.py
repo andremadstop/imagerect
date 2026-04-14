@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from PySide6.QtCore import QPoint, QPointF, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QKeyEvent, QMouseEvent, QPen, QWheelEvent
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
@@ -47,6 +47,7 @@ class Reference2DViewer(QGraphicsView):
         self._reference_roi_mode = False
         self._reference_roi_start: tuple[float, float] | None = None
         self._reference_roi_previous: tuple[float, float, float, float] | None = None
+        self._roi_zoom_pending = False
 
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
@@ -89,10 +90,24 @@ class Reference2DViewer(QGraphicsView):
         )
         self._update_geometry_opacity()
         self._redraw_overlays()
+        self._apply_pending_roi_zoom()
 
     def _fit_scene_to_view(self) -> None:
         self.resetTransform()
         self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
+
+    def _fit_roi_to_view(self) -> None:
+        if self._reference_roi is None or not _is_meaningful_roi(self._reference_roi):
+            return
+        x0, y0, x1, y1 = self._reference_roi
+        self.resetTransform()
+        self.fitInView(QRectF(x0, -y1, x1 - x0, y1 - y0), Qt.KeepAspectRatio)
+
+    def _apply_pending_roi_zoom(self) -> None:
+        if self._reference_roi_mode or not self._roi_zoom_pending:
+            return
+        self._fit_roi_to_view()
+        self._roi_zoom_pending = False
 
     def set_layer_visibility(self, layer_name: str, visible: bool) -> None:
         if self._reference is None:
@@ -114,7 +129,12 @@ class Reference2DViewer(QGraphicsView):
         self._redraw_overlays()
 
     def set_reference_roi(self, reference_roi: tuple[float, float, float, float] | None) -> None:
-        self._reference_roi = reference_roi
+        normalized_roi = _normalize_roi(reference_roi) if reference_roi is not None else None
+        if normalized_roi is None:
+            self._roi_zoom_pending = False
+        elif _is_meaningful_roi(normalized_roi) and not _is_meaningful_roi(self._reference_roi):
+            self._roi_zoom_pending = True
+        self._reference_roi = normalized_roi
         self._update_geometry_opacity()
         self._redraw_overlays()
 
@@ -406,3 +426,10 @@ def _normalize_roi(
         return (0.0, 0.0, 0.0, 0.0)
     x0, y0, x1, y1 = roi
     return (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+
+
+def _is_meaningful_roi(roi: tuple[float, float, float, float] | None) -> bool:
+    if roi is None:
+        return False
+    x0, y0, x1, y1 = roi
+    return x1 > x0 and y1 > y0
