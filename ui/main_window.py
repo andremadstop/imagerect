@@ -466,8 +466,11 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.image_viewer.point_picked.connect(self._handle_image_pick)
+        self.image_viewer.point_selected.connect(self._set_selected_point)
         self.reference_viewer.point_picked.connect(self._handle_reference_pick)
+        self.reference_viewer.point_selected.connect(self._set_selected_point)
         self.reference3d_viewer.point_picked.connect(self._handle_reference3d_pick)
+        self.reference3d_viewer.point_selected.connect(self._set_selected_point)
         self.image_viewer.cursor_message.connect(self._show_cursor_message)
         self.reference_viewer.cursor_message.connect(self._show_cursor_message)
         self.reference3d_viewer.cursor_message.connect(self._show_cursor_message)

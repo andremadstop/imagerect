@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from PySide6.QtCore import QPoint, QPointF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QMouseEvent, QPen, QWheelEvent
+from PySide6.QtGui import QBrush, QColor, QFont, QKeyEvent, QMouseEvent, QPen, QWheelEvent
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsItem,
@@ -25,6 +25,7 @@ class Reference2DViewer(QGraphicsView):
     """Interactive DXF reference viewer."""
 
     point_picked = Signal(float, float)
+    point_selected = Signal(int)
     cursor_message = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -34,17 +35,20 @@ class Reference2DViewer(QGraphicsView):
         self._reference: Reference2D | None = None
         self._layer_items: dict[str, list[QGraphicsLineItem]] = {}
         self._overlay_items: list[QGraphicsItem] = []
+        self._points: list[ControlPoint] = []
         self._is_panning = False
         self._last_pan_pos = QPoint()
 
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setBackgroundBrush(QColor(BG_DARKEST))
+        self.setFocusPolicy(Qt.StrongFocus)
 
     def set_reference(self, reference: Reference2D | None) -> None:
         self._scene.clear()
         self._layer_items = {}
         self._overlay_items.clear()
+        self._points = []
         self._reference = reference
         if reference is None:
             self.setSceneRect(0.0, 0.0, 1.0, 1.0)
@@ -82,11 +86,12 @@ class Reference2DViewer(QGraphicsView):
         points: Iterable[ControlPoint],
         selected_point_id: int | None = None,
     ) -> None:
+        self._points = list(points)
         for item in self._overlay_items:
             self._scene.removeItem(item)
         self._overlay_items.clear()
 
-        for point in points:
+        for point in self._points:
             if point.reference_xy is None:
                 continue
 
@@ -159,6 +164,7 @@ class Reference2DViewer(QGraphicsView):
         self.scale(factor, factor)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        self.setFocus()
         if event.button() == Qt.MiddleButton:
             self._is_panning = True
             self._last_pan_pos = event.pos()
@@ -167,14 +173,28 @@ class Reference2DViewer(QGraphicsView):
             return
 
         if event.button() == Qt.LeftButton and self._reference is not None:
-            world = _scene_to_world(self.mapToScene(event.pos()))
-            tolerance = 10.0 / max(abs(self.transform().m11()), 1e-6)
-            snapped = snap_to_vertex(self._reference, world[0], world[1], tolerance=tolerance)
-            if snapped is not None:
-                world = snapped
-            self.point_picked.emit(float(world[0]), float(world[1]))
+            if event.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier):
+                world = _scene_to_world(self.mapToScene(event.pos()))
+                tolerance = 10.0 / max(abs(self.transform().m11()), 1e-6)
+                snapped = snap_to_vertex(self._reference, world[0], world[1], tolerance=tolerance)
+                if snapped is not None:
+                    world = snapped
+                self.point_picked.emit(float(world[0]), float(world[1]))
+                event.accept()
+                return
+
+            existing_point_id = self._find_point_at(event.pos())
+            if existing_point_id is not None:
+                self.point_selected.emit(existing_point_id)
+                event.accept()
+                return
+
+            self._is_panning = True
+            self._last_pan_pos = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
             event.accept()
             return
+
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -191,15 +211,42 @@ class Reference2DViewer(QGraphicsView):
             self.cursor_message.emit(
                 f"Reference {self._reference.units}: x={world[0]:.2f}, y={world[1]:.2f}"
             )
+            self._update_cursor_for_modifiers(event.modifiers())
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MiddleButton:
+        if event.button() in {Qt.MiddleButton, Qt.LeftButton} and self._is_panning:
             self._is_panning = False
-            self.setCursor(Qt.ArrowCursor)
+            self._update_cursor_for_modifiers(event.modifiers())
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        self._update_cursor_for_modifiers(event.modifiers())
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        self._update_cursor_for_modifiers(event.modifiers())
+        super().keyReleaseEvent(event)
+
+    def _find_point_at(self, position: QPoint) -> int | None:
+        for point in reversed(self._points):
+            if point.reference_xy is None:
+                continue
+            scene_pos = _world_to_scene(point.reference_xy)
+            screen_pos = self.mapFromScene(scene_pos)
+            if (screen_pos - position).manhattanLength() <= 15:
+                return point.id
+        return None
+
+    def _update_cursor_for_modifiers(self, modifiers: object) -> None:
+        if self._is_panning:
+            return
+        if modifiers & (Qt.ControlModifier | Qt.ShiftModifier):
+            self.setCursor(Qt.CrossCursor)
+        else:
+            self.setCursor(Qt.ArrowCursor)
 
 
 def _world_to_scene(point: tuple[float, float]) -> QPointF:

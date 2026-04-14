@@ -11,6 +11,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QImage,
+    QKeyEvent,
     QMouseEvent,
     QPen,
     QPixmap,
@@ -35,6 +36,7 @@ class ImageViewer(QGraphicsView):
     """Interactive source image viewer."""
 
     point_picked = Signal(float, float)
+    point_selected = Signal(int)
     cursor_message = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -45,6 +47,7 @@ class ImageViewer(QGraphicsView):
         self._scene.addItem(self._pixmap_item)
         self._overlay_items: list[QGraphicsItem] = []
         self._image_shape: tuple[int, int] | None = None
+        self._points: list[ControlPoint] = []
         self._is_panning = False
         self._last_pan_pos = QPoint()
 
@@ -53,6 +56,7 @@ class ImageViewer(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setBackgroundBrush(QColor(BG_DARKEST))
+        self.setFocusPolicy(Qt.StrongFocus)
 
     def set_image(self, image: np.ndarray | None) -> None:
         self._scene.clear()
@@ -60,6 +64,7 @@ class ImageViewer(QGraphicsView):
         self._scene.addItem(self._pixmap_item)
         self._overlay_items.clear()
         self._image_shape = None
+        self._points = []
 
         if image is None:
             self.setSceneRect(0.0, 0.0, 1.0, 1.0)
@@ -78,11 +83,12 @@ class ImageViewer(QGraphicsView):
         points: Iterable[ControlPoint],
         selected_point_id: int | None = None,
     ) -> None:
+        self._points = list(points)
         for item in self._overlay_items:
             self._scene.removeItem(item)
         self._overlay_items.clear()
 
-        for point in points:
+        for point in self._points:
             if point.image_xy is None:
                 continue
             x, y = point.image_xy
@@ -133,6 +139,7 @@ class ImageViewer(QGraphicsView):
         self.scale(factor, factor)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        self.setFocus()
         if event.button() == Qt.MiddleButton:
             self._is_panning = True
             self._last_pan_pos = event.pos()
@@ -144,10 +151,26 @@ class ImageViewer(QGraphicsView):
             scene_pos = self.mapToScene(event.pos())
             width = float(self._image_shape[1])
             height = float(self._image_shape[0])
-            if 0.0 <= scene_pos.x() <= width and 0.0 <= scene_pos.y() <= height:
+            if not (0.0 <= scene_pos.x() <= width and 0.0 <= scene_pos.y() <= height):
+                super().mousePressEvent(event)
+                return
+
+            if event.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier):
                 self.point_picked.emit(float(scene_pos.x()), float(scene_pos.y()))
                 event.accept()
                 return
+
+            existing_point_id = self._find_point_at(event.pos())
+            if existing_point_id is not None:
+                self.point_selected.emit(existing_point_id)
+                event.accept()
+                return
+
+            self._is_panning = True
+            self._last_pan_pos = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -162,15 +185,41 @@ class ImageViewer(QGraphicsView):
         if self._image_shape is not None:
             scene_pos = self.mapToScene(event.pos())
             self.cursor_message.emit(f"Image px: x={scene_pos.x():.2f}, y={scene_pos.y():.2f}")
+            self._update_cursor_for_modifiers(event.modifiers())
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MiddleButton:
+        if event.button() in {Qt.MiddleButton, Qt.LeftButton} and self._is_panning:
             self._is_panning = False
-            self.setCursor(Qt.ArrowCursor)
+            self._update_cursor_for_modifiers(event.modifiers())
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        self._update_cursor_for_modifiers(event.modifiers())
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        self._update_cursor_for_modifiers(event.modifiers())
+        super().keyReleaseEvent(event)
+
+    def _find_point_at(self, position: QPoint) -> int | None:
+        for point in reversed(self._points):
+            if point.image_xy is None:
+                continue
+            screen_pos = self.mapFromScene(point.image_xy[0], point.image_xy[1])
+            if (screen_pos - position).manhattanLength() <= 15:
+                return point.id
+        return None
+
+    def _update_cursor_for_modifiers(self, modifiers: object) -> None:
+        if self._is_panning:
+            return
+        if modifiers & (Qt.ControlModifier | Qt.ShiftModifier):
+            self.setCursor(Qt.CrossCursor)
+        else:
+            self.setCursor(Qt.ArrowCursor)
 
 
 def _array_to_qimage(image: np.ndarray) -> QImage:

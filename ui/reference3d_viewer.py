@@ -6,7 +6,16 @@ from collections.abc import Iterable
 
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent, QPen, QPolygonF, QWheelEvent
+from PySide6.QtGui import (
+    QColor,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPen,
+    QPolygonF,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import QWidget
 
 from core.reference3d import (
@@ -23,6 +32,7 @@ class Reference3DViewer(QWidget):
     """Simple Qt-native 3D viewer with orbit, pan, zoom, and point picking."""
 
     point_picked = Signal(float, float, float)
+    point_selected = Signal(int)
     cursor_message = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -47,6 +57,7 @@ class Reference3DViewer(QWidget):
 
         self.setMouseTracking(True)
         self.setMinimumHeight(240)
+        self.setFocusPolicy(Qt.StrongFocus)
 
     def set_reference(self, reference: Reference3D | None) -> None:
         self._reference = reference
@@ -110,6 +121,7 @@ class Reference3DViewer(QWidget):
         self.update()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        self.setFocus()
         self._last_pos = event.pos()
         if event.button() == Qt.MiddleButton:
             self._is_panning = True
@@ -122,9 +134,20 @@ class Reference3DViewer(QWidget):
             event.accept()
             return
         if event.button() == Qt.LeftButton:
-            point = self._pick_display_point(event.pos())
-            if point is not None:
-                self.point_picked.emit(float(point[0]), float(point[1]), float(point[2]))
+            if event.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier):
+                point = self._pick_display_point(event.pos())
+                if point is not None:
+                    self.point_picked.emit(float(point[0]), float(point[1]), float(point[2]))
+                    event.accept()
+                    return
+            else:
+                point_id = self._find_control_point_at(event.pos())
+                if point_id is not None:
+                    self.point_selected.emit(point_id)
+                    event.accept()
+                    return
+                self._is_rotating = True
+                self.setCursor(Qt.SizeAllCursor)
                 event.accept()
                 return
         super().mousePressEvent(event)
@@ -151,20 +174,29 @@ class Reference3DViewer(QWidget):
             self.cursor_message.emit(
                 f"3D point: x={point[0]:.3f}, y={point[1]:.3f}, z={point[2]:.3f}"
             )
+        self._update_cursor_for_modifiers(event.modifiers())
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MiddleButton:
+        if event.button() == Qt.MiddleButton and self._is_panning:
             self._is_panning = False
-            self.setCursor(Qt.ArrowCursor)
+            self._update_cursor_for_modifiers(event.modifiers())
             event.accept()
             return
-        if event.button() == Qt.RightButton:
+        if event.button() in {Qt.RightButton, Qt.LeftButton} and self._is_rotating:
             self._is_rotating = False
-            self.setCursor(Qt.ArrowCursor)
+            self._update_cursor_for_modifiers(event.modifiers())
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        self._update_cursor_for_modifiers(event.modifiers())
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        self._update_cursor_for_modifiers(event.modifiers())
+        super().keyReleaseEvent(event)
 
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
@@ -264,6 +296,23 @@ class Reference3DViewer(QWidget):
         if float(distances[index]) > tolerance:
             return None
         return np.asarray(self._display_points[index], dtype=np.float64)
+
+    def _find_control_point_at(self, position: QPoint) -> int | None:
+        if not self._control_points:
+            return None
+        for point_id, world_point in reversed(tuple(self._control_points.items())):
+            screen_point = self._project_points(np.asarray([world_point], dtype=np.float64))[0][0]
+            if np.linalg.norm(screen_point - np.array([position.x(), position.y()])) <= 15.0:
+                return point_id
+        return None
+
+    def _update_cursor_for_modifiers(self, modifiers: object) -> None:
+        if self._is_panning or self._is_rotating:
+            return
+        if modifiers & (Qt.ControlModifier | Qt.ShiftModifier):
+            self.setCursor(Qt.CrossCursor)
+        else:
+            self.setCursor(Qt.ArrowCursor)
 
 
 def _rotation_matrix(yaw: float, pitch: float) -> np.ndarray:
