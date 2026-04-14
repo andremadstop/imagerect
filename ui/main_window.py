@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import cv2
@@ -86,6 +87,8 @@ from ui.theme import (
     make_symbol_icon,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class MainWindow(QMainWindow):
     """Main application window with 2D and 3D reference workflows."""
@@ -115,6 +118,7 @@ class MainWindow(QMainWindow):
 
     def load_image_file(self, path: str | Path) -> None:
         image_path = Path(path)
+        logger.info("Loading image | path=%s", image_path)
         self.project.sync_to_active_image()
         self._activate_or_create_image(image_path)
         self.source_image_original = load_image(image_path)
@@ -126,6 +130,9 @@ class MainWindow(QMainWindow):
         if self.project.name == "Untitled":
             self.project.name = image_path.stem
         self._record_history()
+        logger.info(
+            "Loaded image | path=%s | active_index=%d", image_path, self.project.active_image_index
+        )
         self._refresh_ui(status=f"Loaded image {image_path.name}")
 
     def load_reference_file(self, path: str | Path) -> None:
@@ -133,6 +140,7 @@ class MainWindow(QMainWindow):
         if reference_path.suffix.lower() == ".dwg":
             self._show_dwg_help_dialog()
             return
+        logger.info("Loading 2D reference from UI | path=%s", reference_path)
         self.reference_2d = load_dxf(reference_path)
         self.reference_3d = None
         self.reference_world_points = {}
@@ -146,6 +154,7 @@ class MainWindow(QMainWindow):
         self.plane_pick_mode = False
         self._current_mode = "view"
         self._record_history()
+        logger.info("Loaded 2D reference from UI | path=%s", reference_path)
         self._refresh_ui(status=f"Loaded reference {reference_path.name}")
 
     def load_3d_reference_file(self, path: str | Path) -> None:
@@ -170,10 +179,12 @@ class MainWindow(QMainWindow):
         self.project.working_plane = None
         self.project.reference_roi = None
         self._record_history()
+        logger.info("Loaded 3D reference from UI | path=%s | type=%s", reference_path, suffix)
         self._refresh_ui(status=f"Loaded 3D reference {reference_path.name}")
 
     def load_project_file(self, path: str | Path) -> None:
         project_path = Path(path)
+        logger.info("Loading project | path=%s", project_path)
         self.project = ProjectData.load(project_path)
         self.project.sync_from_active_image()
         self.project_path = project_path
@@ -183,6 +194,7 @@ class MainWindow(QMainWindow):
         self.plane_pick_mode = False
         self._reload_assets_from_project()
         self._reset_history()
+        logger.info("Loaded project | path=%s | images=%d", project_path, len(self.project.images))
         self._refresh_ui(status=f"Loaded project {project_path.name}")
 
     def save_project_file(self, path: str | Path | None = None) -> None:
@@ -201,6 +213,7 @@ class MainWindow(QMainWindow):
         self.project.save(target)
         self.project_path = target
         self._update_window_title()
+        logger.info("Saved project | path=%s", target)
         self.statusBar().showMessage(f"Saved project to {target}", 5000)
 
     def save_project_as(self) -> None:
@@ -227,6 +240,12 @@ class MainWindow(QMainWindow):
         )
         if not file_name:
             return None
+        logger.info(
+            "Starting export from UI | output=%s | sources=%d | format=%s",
+            file_name,
+            len(sources),
+            settings.output_format,
+        )
 
         reference_segments = None
         if self.reference_2d is not None:
@@ -310,12 +329,14 @@ class MainWindow(QMainWindow):
                 )
             except ExportCancelledError:
                 progress_dialog.cancel()
+                logger.warning("Export cancelled by user | output=%s", file_name)
                 self.statusBar().showMessage("Export cancelled", 5000)
                 return None
             finally:
                 progress_dialog.close()
 
         self.statusBar().showMessage(f"Exported {result.image_path.name}", 5000)
+        logger.info("Export finished in UI | image=%s", result.image_path)
         metadata_text = (
             f"\nMetadata: {result.metadata_path}"
             if result.metadata_path.exists()
@@ -677,6 +698,11 @@ class MainWindow(QMainWindow):
         self._refresh_source_image()
         self._record_history()
         self._recompute_transform()
+        logger.info(
+            "Applied lens correction in UI | previous=%s | next=%s",
+            previous_profile.name if previous_profile is not None else "none",
+            next_profile.name,
+        )
         self._refresh_ui(status="Applied lens correction; image points and ROI were updated")
 
     def _open_reference_dialog(self) -> None:
@@ -715,6 +741,7 @@ class MainWindow(QMainWindow):
                 return
             self.run_export()
         except Exception as exc:
+            logger.exception("Export dialog failed")
             QMessageBox.critical(self, "Export failed", str(exc))
 
     def _new_project(self) -> None:
@@ -817,11 +844,13 @@ class MainWindow(QMainWindow):
             return
         source_points = reference_source_points(self.reference_3d)
         if source_points is None or len(source_points) < 3:
+            logger.warning("Automatic plane fit rejected due to too few 3D points")
             QMessageBox.warning(self, "Plane fit failed", "3D reference contains too few points.")
             return
         try:
             plane = define_plane_ransac(source_points)
         except Exception as exc:
+            logger.exception("Automatic plane fit failed")
             QMessageBox.critical(self, "Plane fit failed", str(exc))
             return
         self._apply_working_plane(plane, "Defined working plane automatically")
@@ -1204,6 +1233,7 @@ class MainWindow(QMainWindow):
                 [point.reference_xy for point in paired_points if point.reference_xy is not None],
             )
         except Exception as exc:
+            logger.warning("Homography recompute failed | error=%s", exc)
             self.project.warnings = [str(exc)]
             self.project.sync_to_active_image()
             return

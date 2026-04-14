@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
 
+logger = logging.getLogger(__name__)
 Point2D = tuple[float, float]
 
 
@@ -31,14 +33,27 @@ def solve_planar_homography(
     """Solve image -> reference plane homography and compute residuals."""
 
     if len(image_points) != len(reference_points):
+        logger.warning(
+            "Homography solve rejected due to mismatched point counts | image=%d | reference=%d",
+            len(image_points),
+            len(reference_points),
+        )
         raise ValueError("Image/reference point counts must match.")
 
     image_array = _as_points_array(image_points)
     reference_array = _as_points_array(reference_points)
     warnings = build_quality_warnings(reference_array)
     if len(image_points) < 4:
+        logger.warning(
+            "Homography solve rejected due to too few point pairs | count=%d", len(image_points)
+        )
         raise ValueError("Too few point pairs for homography; at least four are required.")
 
+    logger.info(
+        "Solving homography | point_pairs=%d | method=%s",
+        len(image_points),
+        "RANSAC" if len(image_points) > 4 else "Direct",
+    )
     method = cv2.RANSAC if len(image_points) > 4 else 0
     matrix, mask = cv2.findHomography(
         image_array,
@@ -50,6 +65,7 @@ def solve_planar_homography(
         message = "OpenCV could not estimate a homography from the point pairs."
         if warnings:
             message = f"{message} {'; '.join(warnings)}."
+        logger.warning("Homography estimation failed | warnings=%s", warnings)
         raise ValueError(message)
 
     projected = project_points(image_array, matrix)
@@ -61,6 +77,12 @@ def solve_planar_homography(
         warnings.append("High RMS reprojection error")
     if mask is not None and int(mask.sum()) < len(image_points):
         warnings.append("RANSAC rejected one or more outliers")
+    if warnings:
+        logger.warning(
+            "Homography solved with warnings | rms=%.4f | warnings=%s", rms_error, warnings
+        )
+    else:
+        logger.info("Homography solved | rms=%.4f | point_pairs=%d", rms_error, len(image_points))
 
     mask_values = mask.ravel() if mask is not None else np.ones(len(image_points), dtype=np.uint8)
     return HomographyResult(

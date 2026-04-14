@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+logger = logging.getLogger(__name__)
 Point2D = tuple[float, float]
 
 
@@ -87,6 +89,12 @@ def apply_lens_correction(
         0.0,
         (width, height),
     )
+    logger.info(
+        "Applying lens correction | profile=%s | size=%dx%d",
+        profile.name,
+        width,
+        height,
+    )
     return cv2.undistort(image, camera_matrix, distortion, None, new_camera_matrix)
 
 
@@ -122,10 +130,12 @@ def read_exif(image_path: Path) -> dict[str, Any]:
     with Image.open(image_path) as image:
         raw = image.getexif()
         if not raw:
+            logger.warning("No EXIF data found | path=%s", image_path)
             return {}
         exif: dict[str, Any] = {}
         for tag_id, value in raw.items():
             exif[TAGS.get(tag_id, str(tag_id))] = value
+    logger.info("Loaded EXIF metadata | path=%s | keys=%d", image_path, len(exif))
     return exif
 
 
@@ -136,13 +146,16 @@ def match_preset(exif: dict[str, Any], presets: list[LensProfile]) -> LensProfil
     model = str(exif.get("Model", "")).strip().lower()
     combined = f"{make} {model}".strip()
     if not combined:
+        logger.warning("Missing EXIF make/model for preset matching")
         return None
 
     for preset in presets:
         preset_key = preset.name.lower()
         words = [word for word in preset_key.split() if len(word) > 2]
         if words and any(word in combined for word in words):
+            logger.info("Matched lens preset | preset=%s | exif=%s", preset.name, combined)
             return preset
+    logger.warning("No lens preset matched | exif=%s", combined)
     return None
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any, cast
 
 import numpy as np
 
+logger = logging.getLogger(__name__)
 Point2D = tuple[float, float]
 
 try:
@@ -78,6 +80,7 @@ def load_e57(path: str | Path) -> Reference3D:
     )
     points = _downsample_points(points, target_count=2_000_000)
     bounds_min, bounds_max = _compute_bounds(points)
+    logger.info("Loaded E57 reference | path=%s | points=%d", reference_path, len(points))
     return Reference3D(
         points=points,
         source_type="e57",
@@ -104,6 +107,12 @@ def load_obj(path: str | Path) -> Reference3D:
     vertices = np.asarray(mesh.vertices, dtype=np.float64)
     faces = np.asarray(mesh.faces, dtype=np.int32)
     bounds_min, bounds_max = _compute_bounds(vertices)
+    logger.info(
+        "Loaded OBJ reference | path=%s | vertices=%d | faces=%d",
+        reference_path,
+        len(vertices),
+        len(faces),
+    )
     return Reference3D(
         vertices=vertices,
         faces=faces,
@@ -156,6 +165,7 @@ def define_plane_ransac(
         _, _, vh = np.linalg.svd(centered, full_matrices=False)
         normal = _normalize(vh[-1])
         origin = centroid
+        logger.warning("Open3D unavailable; falling back to SVD plane fit")
 
     helper_axis = np.array([1.0, 0.0, 0.0], dtype=np.float64)
     if abs(float(np.dot(helper_axis, normal))) > 0.9:
@@ -291,8 +301,19 @@ def _downsample_points(points: np.ndarray, target_count: int) -> np.ndarray:
         reduced = cloud.voxel_down_sample(voxel_size=max(voxel_size, 1e-9))
         downsampled = np.asarray(reduced.points, dtype=np.float64)
         if len(downsampled) > 0:
+            logger.info(
+                "Downsampled point cloud with Open3D | original=%d | reduced=%d",
+                len(points),
+                len(downsampled),
+            )
             return downsampled[:target_count]
     step = max(len(points) // target_count, 1)
+    logger.warning(
+        "Open3D unavailable or downsampling returned no points; using stride fallback | "
+        "original=%d | target=%d",
+        len(points),
+        target_count,
+    )
     return points[::step][:target_count]
 
 

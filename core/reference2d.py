@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from collections.abc import Iterable
@@ -14,6 +15,7 @@ import ezdxf
 import numpy as np
 from ezdxf.entities import DXFGraphic
 
+logger = logging.getLogger(__name__)
 Point2D = tuple[float, float]
 
 
@@ -53,8 +55,10 @@ def load_dxf(path: str | Path) -> Reference2D:
     if not reference_path.exists():
         raise FileNotFoundError(f"Reference not found: {reference_path}")
     if reference_path.suffix.lower() == ".dwg":
+        logger.warning("DWG input rejected | path=%s", reference_path)
         raise ValueError("DWG input is not supported directly in Phase 1. Convert it to DXF first.")
 
+    logger.info("Loading 2D reference | path=%s", reference_path)
     document = ezdxf.readfile(str(reference_path))
     modelspace = document.modelspace()
     layers = [
@@ -74,6 +78,14 @@ def load_dxf(path: str | Path) -> Reference2D:
     extents_min, extents_max = _compute_extents(vertices)
     units = _units_from_code(int(document.header.get("$INSUNITS", 0)))
     crs_epsg = _extract_crs_epsg(document, reference_path)
+    logger.info(
+        "Loaded 2D reference | path=%s | layers=%d | segments=%d | units=%s | epsg=%s",
+        reference_path,
+        len(layers),
+        len(segments),
+        units,
+        crs_epsg,
+    )
     return Reference2D(
         layers=layers,
         segments=segments,
@@ -239,6 +251,7 @@ def _extract_crs_epsg(document: Any, path: Path) -> int | None:
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
+        logger.warning("Could not scan DXF text for EPSG metadata | path=%s", path)
         return None
 
     match = re.search(r"\bEPSG[:= ]+(\d{4,6})\b", text, re.IGNORECASE)

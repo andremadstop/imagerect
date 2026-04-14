@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from core.logging_setup import configure_logging
 from ui.main_window import MainWindow
 from ui.theme import apply_theme
+
+logger = logging.getLogger(__name__)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -47,15 +52,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.smoke_test:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-    app = QApplication(sys.argv if argv is None else [sys.argv[0], *argv])
-    app_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-    icon_path = app_root / "assets" / "icon.png"
-    if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
-    apply_theme(app)
-    window = MainWindow()
-
+    smoke_log_dir: tempfile.TemporaryDirectory[str] | None = None
     try:
+        log_dir = None
+        if args.smoke_test:
+            smoke_log_dir = tempfile.TemporaryDirectory(prefix="imagerect-smoke-logs-")
+            log_dir = Path(smoke_log_dir.name)
+        log_file = configure_logging(log_dir=log_dir)
+        logger.info("Application start | smoke_test=%s | log_file=%s", args.smoke_test, log_file)
+
+        app = QApplication(sys.argv if argv is None else [sys.argv[0], *argv])
+        app_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        icon_path = app_root / "assets" / "icon.png"
+        if icon_path.exists():
+            app.setWindowIcon(QIcon(str(icon_path)))
+        apply_theme(app)
+        window = MainWindow()
+
         if args.project:
             window.load_project_file(args.project)
         if args.image:
@@ -66,33 +79,47 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 window.load_reference_file(args.reference)
     except Exception as exc:
+        logger.exception("Application startup failed")
         print(f"startup error: {exc}", file=sys.stderr)
         return 1
 
-    if args.smoke_test:
-        result_holder: dict[str, str] = {}
+    try:
+        if args.smoke_test:
+            result_holder: dict[str, str] = {}
 
-        def _run() -> None:
-            try:
-                result = window.run_synthetic_smoke_test(args.smoke_output)
-                result_holder["result"] = (
-                    f"smoke-test export={result.image_path} metadata={result.metadata_path}"
-                )
-                app.exit(0)
-            except Exception as exc:  # pragma: no cover - exercised by manual verification
-                result_holder["error"] = str(exc)
-                app.exit(1)
+            def _run() -> None:
+                try:
+                    result = window.run_synthetic_smoke_test(args.smoke_output)
+                    result_holder["result"] = (
+                        f"smoke-test export={result.image_path} metadata={result.metadata_path}"
+                    )
+                    logger.info(
+                        "Smoke test finished | export=%s | metadata=%s",
+                        result.image_path,
+                        result.metadata_path,
+                    )
+                    app.exit(0)
+                except Exception as exc:  # pragma: no cover - exercised by manual verification
+                    result_holder["error"] = str(exc)
+                    logger.exception("Smoke test failed")
+                    app.exit(1)
 
-        QTimer.singleShot(0, _run)
-        exit_code = app.exec()
-        if "result" in result_holder:
-            print(result_holder["result"])
-        if "error" in result_holder:
-            print(f"smoke-test failed: {result_holder['error']}", file=sys.stderr)
-        return int(exit_code)
+            QTimer.singleShot(0, _run)
+            smoke_exit_code = int(app.exec())
+            if "result" in result_holder:
+                print(result_holder["result"])
+            if "error" in result_holder:
+                print(f"smoke-test failed: {result_holder['error']}", file=sys.stderr)
+            return smoke_exit_code
 
-    window.show()
-    return int(app.exec())
+        window.show()
+        ui_exit_code = int(app.exec())
+        logger.info("Application exit | code=%s", ui_exit_code)
+        return ui_exit_code
+    finally:
+        logging.shutdown()
+        if smoke_log_dir is not None:
+            smoke_log_dir.cleanup()
 
 
 if __name__ == "__main__":

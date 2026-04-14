@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from core.writers.jpeg_writer import write_jpeg_image
 from core.writers.png_writer import write_png_image
 from core.writers.tiff_writer import TiffPageSpec, write_tiff_image, write_tiff_pages
 
+logger = logging.getLogger(__name__)
 Point2D = tuple[float, float]
 
 INTERPOLATION_FLAGS = {
@@ -115,6 +117,13 @@ def export_rectified_image(
 ) -> RectificationExportResult:
     """Warp the source image into the metric reference plane and save metadata."""
 
+    logger.info(
+        "Starting rectified export | output=%s | format=%s | units=%s | bit_depth=%d",
+        output_path,
+        output_format,
+        units,
+        bit_depth,
+    )
     plan = _prepare_render_plan(
         source_image=source_image,
         homography_image_to_reference=homography_image_to_reference,
@@ -196,10 +205,18 @@ def export_rectified_image(
         if write_metadata_json:
             metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     except Exception:
+        logger.exception("Rectified export failed | output=%s", image_path)
         image_path.unlink(missing_ok=True)
         metadata_path.unlink(missing_ok=True)
         raise
 
+    logger.info(
+        "Completed rectified export | image=%s | metadata=%s | size=%dx%d",
+        image_path,
+        metadata_path,
+        plan.width,
+        plan.height,
+    )
     return RectificationExportResult(
         image_path=image_path,
         metadata_path=metadata_path,
@@ -319,6 +336,13 @@ def export_mosaic_image(
 ) -> RectificationExportResult:
     """Export a composed mosaic of multiple rectified images."""
 
+    logger.info(
+        "Starting mosaic export | output=%s | sources=%d | format=%s | bit_depth=%d",
+        output_path,
+        len(sources),
+        output_format,
+        bit_depth,
+    )
     rendered = render_mosaic_image(
         sources=sources,
         pixel_size=pixel_size,
@@ -486,6 +510,13 @@ def export_mosaic_image(
     if write_metadata_json:
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
+    logger.info(
+        "Completed mosaic export | image=%s | metadata=%s | size=%dx%d",
+        image_path,
+        metadata_path,
+        rendered.width,
+        rendered.height,
+    )
     return RectificationExportResult(
         image_path=image_path,
         metadata_path=metadata_path,
