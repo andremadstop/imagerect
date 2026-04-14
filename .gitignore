@@ -33,6 +33,7 @@ tests/sample_data/*.E57
 tests/sample_data/*.OBJ
 tests/sample_data/*.FBX
 !tests/sample_data/synthetic_reference.dxf
+!tests/sample_data/2026_016_Maerkplan_StGeorg_Berlin.dwg
 
 # IDE
 .vscode/
