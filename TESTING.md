@@ -48,7 +48,21 @@ Checkliste:
 - [ ] **Export Preview** öffnet, zeigt entzerrtes Bild mit DXF-Overlay
 - [ ] **Export** schreibt PNG und TIFF + JSON-Sidecar
 - [ ] **BigTIFF-Export** funktioniert bei großem Canvas (>20k px)
+- [ ] **Hilfe → Log-Ordner öffnen** öffnet `~/.imagerect/logs/`
+- [ ] **Hilfe → Diagnose-Paket exportieren...** schreibt ZIP ohne Fehler
 - [ ] App beendet sauber (kein Segfault)
+
+## Diagnose-Paket
+
+Wenn ein manueller Test fehlschlägt und das Problem nicht sofort klar ist:
+
+- [ ] Menü `Hilfe → Log-Ordner öffnen` prüfen: aktuelle Logs sind vorhanden
+- [ ] Menü `Hilfe → Diagnose-Paket exportieren...` ausführen
+- [ ] ZIP enthält mindestens:
+  `system_info.json`, `logs/imagerect.log`, optional `project/<name>.imagerect.json`
+- [ ] Beim Bug-Report an Andre das Diagnose-Paket mitschicken
+- [ ] Kurz dazuschreiben:
+  was geklickt wurde, welches Bild/DXF genutzt wurde, was stattdessen passiert ist
 
 ## Echt-Daten-Workflow (St. Georg Berlin)
 

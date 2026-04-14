@@ -203,6 +203,25 @@ The repository contains a synthetic Phase-1 verification path that instantiates 
 QT_QPA_PLATFORM=offscreen .venv/bin/python main.py --smoke-test
 ```
 
+## Troubleshooting
+
+ImageRect writes rotating log files locally for bug diagnosis:
+
+- Linux: `~/.imagerect/logs/imagerect.log`
+- macOS: `~/Library/Logs/ImageRect/imagerect.log`
+- Windows: `%LOCALAPPDATA%\ImageRect\logs\imagerect.log`
+
+The GUI also provides:
+
+- `Hilfe -> Log-Ordner öffnen`
+- `Hilfe -> Diagnose-Paket exportieren...`
+
+The diagnose ZIP contains `system_info.json`, the current rotated logs, and the
+active project JSON when the project has already been saved to disk.
+
+When reporting a bug, attach the diagnose package and include a short note
+describing the exact workflow that triggered the issue.
+
 ## Tests
 
 ```bash
