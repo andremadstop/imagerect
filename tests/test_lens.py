@@ -204,6 +204,56 @@ def test_refresh_source_image_updates_viewer(qtbot: Any) -> None:
     assert after_transform == pytest.approx(before_transform)
 
 
+def test_open_lens_dialog_updates_project_and_viewer(
+    monkeypatch: Any,
+    qtbot: Any,
+) -> None:
+    profile = LensProfile(
+        name="DJI Mavic 3",
+        focal_length_mm=24.0,
+        sensor_width_mm=17.3,
+        k1=-0.08,
+        k2=0.01,
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.source_image_original = _structured_image()
+    window._refresh_source_image()
+    window._refresh_ui()
+    before_pixmap_key = window.image_viewer._pixmap_item.pixmap().cacheKey()
+
+    class FakeLensDialog:
+        def __init__(
+            self,
+            image: np.ndarray,
+            image_path: object,
+            current_profile: LensProfile | None,
+            parent: object,
+        ) -> None:
+            self._profile = profile
+
+        def exec(self) -> int:
+            return 1
+
+        def selected_profile(self) -> LensProfile:
+            return self._profile
+
+        def lens_correction_payload(self) -> dict[str, object]:
+            return {"profile": self._profile.to_dict(), "applied": True}
+
+    monkeypatch.setattr("ui.main_window.LensDialog", FakeLensDialog)
+
+    window._open_lens_dialog()
+
+    assert window.project.lens_correction == {"profile": profile.to_dict(), "applied": True}
+    assert window.source_image is not None
+    difference = np.abs(
+        window.source_image.astype(np.int16) - window.source_image_original.astype(np.int16)
+    )
+    assert float(difference.mean()) > 0.5
+    assert window.image_viewer._pixmap_item.pixmap().cacheKey() != before_pixmap_key
+
+
 def _structured_image() -> np.ndarray:
     image = np.zeros((240, 320, 3), dtype=np.uint8)
     cv2.rectangle(image, (24, 24), (296, 216), (255, 255, 255), 3)
