@@ -55,3 +55,4 @@ CODEX-TASK-*.md
 
 # Keep the tracked PyInstaller spec
 !imagerect.spec
+INBOX.md
