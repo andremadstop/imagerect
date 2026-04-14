@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "imagerect"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first desktop app for metric image rectification against 2D references"
 readme = "README.md"
 license = { text = "MIT" }

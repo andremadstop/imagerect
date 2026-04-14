@@ -3,7 +3,7 @@
 [![CI](https://github.com/andremadstop/imagerect/actions/workflows/ci.yml/badge.svg)](https://github.com/andremadstop/imagerect/actions/workflows/ci.yml)
 [![Release Build](https://github.com/andremadstop/imagerect/actions/workflows/release.yml/badge.svg)](https://github.com/andremadstop/imagerect/actions/workflows/release.yml)
 
-ImageRect is a local-first Linux desktop prototype for manual, metric image rectification against 2D and planar 3D references. The current MVP covers DXF-based rectification plus Phase-2 support for E57 point clouds and OBJ meshes via a user-defined working plane.
+ImageRect is a local-first Linux desktop prototype for manual, metric image rectification against 2D and planar 3D references. The current v0.2.0 scope covers DXF-based rectification plus Phase-2 support for E57 point clouds and OBJ meshes via a user-defined working plane, lens correction, ROI-aware export, tiled large-image output, multi-image mosaics, and GPS pose metadata.
 
 ![Screenshot](docs/screenshot.png)
 
@@ -14,12 +14,29 @@ ImageRect is a local-first Linux desktop prototype for manual, metric image rect
 - Load E57 point clouds and OBJ meshes as 3D references
 - Define a working plane from 3 picks or an automatic plane fit
 - Pick corresponding image and reference points manually
+- Apply lens correction presets or custom camera metadata before rectification
 - Compute image-to-reference homography with RMS error and residual vectors
+- Draw an image clip polygon and a DXF region of interest for export bounds
+- Preview exports with DXF/control-point overlays before writing to disk
+- Export TIFF, BigTIFF, PNG, or JPEG at 8/16/32-bit depth
+- Stream tiled TIFF export for very large canvases
+- Combine multiple source images into a shared mosaic with optional feather blending
+- Extract GPS/EXIF pose hints and write camera pose metadata JSON
 - Save/load project JSON
-- Export rectified PNG/TIFF plus metadata JSON
+- Export rectified imagery plus metadata JSON
 - Undo/redo point edits, delete points, and reorder point rows
 
 DWG is not a hard dependency in the MVP. Convert DWG to DXF first if needed.
+
+## New features in v0.2.0
+
+- Lens correction workflow with preset matching and EXIF-assisted camera selection
+- Image clip polygons and DXF region-of-interest export bounds
+- Export preview dialog with overlay toggles and live size estimates
+- 8-bit, 16-bit, and 32-bit output with TIFF, BigTIFF, PNG, and JPEG targets
+- Streaming tiled TIFF export for very large canvases
+- Multi-image project support with shared-reference mosaic export
+- GPS/EXIF pose extraction, rough pre-alignment markers, and camera pose metadata output
 
 ## Setup
 
@@ -93,6 +110,56 @@ You can also preload assets:
 7. Export the rectified image.
 
 The export dialog lets you define pixel size, output format, interpolation, and optional clipping to the control-point hull.
+
+### Lens correction workflow
+
+1. Load the source image.
+2. Open `Lens Correction`.
+3. Start from the detected preset or enter a custom focal length and sensor width.
+4. Compare the before/after preview and apply the correction.
+5. Place or refine image control points on the corrected source image.
+
+Lens correction is stored per image in the project file, so mosaic projects can mix different camera profiles.
+
+### Mosaic workflow
+
+1. Load the first image and place its control points against the shared reference.
+2. Load additional images with the same reference still open.
+3. Switch active images from the `Images` list in the project panel.
+4. Solve at least four valid pairs per image.
+5. Export once to compose all solved images into one shared reference canvas.
+
+The Phase-1 mosaic compositor uses last-written wins by default and can optionally feather seams with a configurable blend radius in pixels.
+
+### Large-image export (>100k px)
+
+- The export engine predicts output size and canvas dimensions before writing files.
+- TIFF and BigTIFF exports switch to tiled streaming for very large canvases, avoiding full-frame warps in RAM.
+- Multi-layer TIFF exports can include the rectified image, DXF overlay, control-point layer, and clip-mask layer.
+- BigTIFF is enabled automatically when the predicted file size crosses the 4 GB threshold, or explicitly when selected.
+
+### GPS pose output
+
+- Image loading extracts GPS latitude/longitude/altitude, heading, and timestamps from EXIF and drone XMP metadata when available.
+- DXF references with embedded `EPSG:<code>` metadata expose rough camera markers in the 2D reference viewer.
+- Export metadata JSON includes the rectified canvas bounds plus per-image GPS hints and camera pose output derived from homography decomposition when intrinsics are known.
+
+## Keyboard shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl+I` | Load source image |
+| `Ctrl+D` | Load DXF reference |
+| `Ctrl+Shift+D` | Load 3D reference |
+| `Ctrl+E` | Export rectified image or mosaic |
+| `Ctrl+P` | Toggle project settings panel |
+| `Ctrl+Z` | Undo |
+| `Ctrl+Shift+Z` / `Ctrl+Y` | Redo |
+| `Delete` | Delete selected point |
+| `Ctrl+Up` / `Ctrl+Down` | Reorder selected point |
+| `Ctrl+Click` or `Shift+Click` | Place a control point in the active viewer |
+| `Middle-drag` | Pan the active viewer |
+| `Mouse wheel` | Zoom the active viewer |
 
 ### 3D workflow
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.project import ProjectData
+from core.project import ControlPoint, ImageEntry, ProjectData
 
 
 def test_project_roundtrip(tmp_path: Path) -> None:
@@ -39,3 +39,49 @@ def test_project_roundtrip(tmp_path: Path) -> None:
     assert loaded.points[0].residual_vector == (0.1, -0.2)
     assert loaded.working_plane == project.working_plane
     assert loaded.transform_matrix is not None
+
+
+def test_project_roundtrip_preserves_multiple_images(tmp_path: Path) -> None:
+    project = ProjectData(name="multi", reference_crs_epsg=25833)
+    project.images = [
+        ImageEntry(
+            path="first.jpg",
+            gps_pose={"latitude": 52.5, "longitude": 13.4},
+            points=[
+                ControlPoint(
+                    id=1,
+                    label="P1",
+                    image_xy=(10.0, 10.0),
+                    reference_xy=(100.0, 200.0),
+                )
+            ],
+            transform_matrix=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        ),
+        ImageEntry(
+            path="second.jpg",
+            clip_polygon=[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)],
+            points=[
+                ControlPoint(
+                    id=2,
+                    label="P2",
+                    image_xy=(20.0, 30.0),
+                    reference_xy=(300.0, 400.0),
+                )
+            ],
+            warnings=["needs review"],
+        ),
+    ]
+    project.active_image_index = 1
+    project.sync_from_active_image()
+
+    path = tmp_path / "multi.imagerect.json"
+    project.save(path)
+    loaded = ProjectData.load(path)
+
+    assert loaded.reference_crs_epsg == 25833
+    assert len(loaded.images) == 2
+    assert loaded.active_image_index == 1
+    assert loaded.images[0].gps_pose == {"latitude": 52.5, "longitude": 13.4}
+    assert loaded.images[1].clip_polygon == [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]
+    assert loaded.images[1].warnings == ["needs review"]
+    assert loaded.image_path == "second.jpg"
