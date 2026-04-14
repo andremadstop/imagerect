@@ -3,6 +3,37 @@
 > Wird nach jeder größeren Session aktualisiert. Codex/Claude liest
 > das als erstes wenn eine neue Session startet.
 
+## Stand 2026-04-14 morgens — Task 009 abgeschlossen
+
+### Was in dieser Session dazukam
+
+- **Task 009 vollständig abgeschlossen** in 3 Commits auf `main`:
+  `c89da3d` (rotierende Logfiles), `859eaeb` (Diagnose-Paket im Hilfe-Menü),
+  `8169b88` (README/TESTING-Doku)
+- **CI auf `main` grün** für alle drei Task-009-Commits, zuletzt Run
+  `24387929687` (`docs: diagnose package in TESTING.md + README.md`)
+- Neue Debugging-Infrastruktur jetzt in der App:
+  Logfiles unter `~/.imagerect/logs/`, Menü
+  `Hilfe -> Log-Ordner öffnen`, Menü
+  `Hilfe -> Diagnose-Paket exportieren...`
+
+### Reihenfolge jetzt
+
+1. **Andre führt `TESTING.md` Linux-Smoke durch** inklusive neuem Diagnose-Paket
+2. **Andre testet Windows-Installer** aus GitHub Release `v0.2.0`
+3. **Andre macht Echt-Daten-Workflow** (DJI-Fotos + St. Georg DXF)
+4. **Gefundene Bugs** werden als neue `CODEX-TASK-NNN-*.md` festgehalten
+5. Danach: Docs/Screenshots vervollständigen und **v0.2.1** vorbereiten
+6. **Task 010 bleibt DRAFT** und startet erst nach v0.2.1-Release
+
+### Blockiert auf User-Aktion
+
+- Linux-Smoke, Windows-Installer-Test und Echt-Daten-Workflow liegen jetzt
+  beim User
+- Ohne diese manuellen Ergebnisse sollte Task 010 nicht gestartet werden
+
+---
+
 ## Stand 2026-04-14 spätabends — Tasks 009 + 010 vorbereitet
 
 ### Was in dieser Session dazukam
@@ -18,13 +49,29 @@
 
 ### Reihenfolge jetzt
 
-1. Codex macht Task 008 fertig (aktuell autonom unterwegs)
-2. CI grün + v0.2.0 retaggt
-3. Andre testet Windows-Installer
-4. Dann Codex Task 009 (Log-Export) — unblockiert User-Bug-Reports
-5. Doku/Screenshots füllen → v0.2.1 Release
-6. Tier 1 Promo (Show HN, Reddit, Mastodon)
-7. Erst dann Task 010 (CLI-Foundation, v0.3.0)
+1. ✅ Codex hat Task 008 fertig, CI grün, v0.2.0 auf abfac8d retaggt,
+   Release-Build inkl. Windows-Installer durch
+2. **Andre testet Windows-Installer** (Gating zu v0.2.1)
+3. Codex Task 009 (Log-Export) — kann parallel zu Windows-Test starten
+4. Docs + Screenshots füllen → v0.2.1 Release
+5. Task 011-013 (Property-Tests, Security, UI-Tests) vor öffentlicher Promo
+6. Tier 1 Promo (Show HN, Reddit, Mastodon) — siehe promo/channels.md
+7. Danach Task 010 (CLI-Foundation, v0.3.0)
+
+### Task-Pipeline nach Task 008
+
+- **Task 009** (log-export) — ready for Codex, nach Andres Freigabe
+- **Task 010** (cli-foundation) — DRAFT, nach v0.2.1
+- **Task 011** (property + golden tests) — DRAFT, vor Promo
+- **Task 012** (security hardening) — DRAFT, vor Promo
+- **Task 013** (ui-flow tests) — DRAFT, nach 012
+
+### NotebookLM
+
+Notebook `601131dd-c8da-4099-8efd-63c02f9f1161` mit 11 initialen
+Sources befüllt (README, AGENTS, ROADMAP, TESTING, HANDOFF, docs/promo,
+Tasks 008-010). Neue Task-Drafts 011-013 können bei Bedarf nachgeladen
+werden.
 
 ---
 

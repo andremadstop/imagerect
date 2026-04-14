@@ -32,6 +32,20 @@
 
 ## Mittelfristig (v0.3.0)
 
+### Qualitäts- und Sicherheits-Hardening (Vorbereitung für externe User)
+
+Sobald v0.2.1 released ist, lohnen sich diese Investments bevor das
+Projekt ernsthaft beworben wird (Show HN, Reddit, FOSSGIS) — denn dann
+kommen echte User mit echten Files, die möglicherweise malformed sind.
+
+- **Task 011** — Property-based Tests (Hypothesis) für Homographie-Solver,
+  Golden-File-Regression für Export-Pipeline
+- **Task 012** — Security-Hardening: Decompression-Bomb-Schutz,
+  DXF/E57-Parser-Härtung, Pfad-Traversal-Prävention in Projekt-Loader,
+  `bandit` + `pip-audit` + Dependabot + CodeQL in CI
+- **Task 013** — pytest-qt für UI-Flow-Tests (Modifier-Click,
+  Projekt-Roundtrip, Lens-Dialog, Menu-Accessibility)
+
 ### CLI-Foundation — Zielzustand volle CLI-Bedienbarkeit
 
 Kern ist bereits Qt-frei (`core/` ohne Qt-Imports) — CLI kann sich
