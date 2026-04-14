@@ -53,7 +53,7 @@ jobs:
           pyinstaller imagerect.spec --clean --noconfirm
           pyinstaller imagerect_cli.spec --clean --noconfirm
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: dist/
@@ -72,7 +72,7 @@ jobs:
       - name: Build installer
         run: iscc installer/imagerect.iss
       - name: Upload installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ImageRect-windows-installer
           path: dist/installer/ImageRect-*-Setup.exe
