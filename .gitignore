@@ -50,5 +50,8 @@ Thumbs.db
 # Dev task files
 CODEX-TASK-*.md
 
+# User-local agent config
+.codex
+
 # Keep the tracked PyInstaller spec
 !imagerect.spec
