@@ -1,0 +1,226 @@
+{
+  "name": "golden",
+  "image_path": "golden_source.png",
+  "images": [
+    {
+      "path": "golden_source.png",
+      "lens_correction": null,
+      "clip_polygon": null,
+      "points": [
+        {
+          "id": 1,
+          "label": "P1",
+          "image_xy": [
+            120.0,
+            420.0
+          ],
+          "reference_xy": [
+            0.0,
+            0.0
+          ],
+          "locked": false,
+          "residual": 7.871600712005029e-14,
+          "residual_vector": [
+            -7.871600712005029e-14,
+            0.0
+          ]
+        },
+        {
+          "id": 2,
+          "label": "P2",
+          "image_xy": [
+            620.0,
+            360.0
+          ],
+          "reference_xy": [
+            400.0,
+            0.0
+          ],
+          "locked": false,
+          "residual": 1.1368683772161603e-13,
+          "residual_vector": [
+            1.1368683772161603e-13,
+            0.0
+          ]
+        },
+        {
+          "id": 3,
+          "label": "P3",
+          "image_xy": [
+            560.0,
+            90.0
+          ],
+          "reference_xy": [
+            400.0,
+            300.0
+          ],
+          "locked": false,
+          "residual": 8.038873388460929e-14,
+          "residual_vector": [
+            5.684341886080802e-14,
+            -5.684341886080802e-14
+          ]
+        },
+        {
+          "id": 4,
+          "label": "P4",
+          "image_xy": [
+            170.0,
+            120.0
+          ],
+          "reference_xy": [
+            0.0,
+            300.0
+          ],
+          "locked": false,
+          "residual": 1.3697366156699668e-13,
+          "residual_vector": [
+            -7.64008304400488e-14,
+            -1.1368683772161603e-13
+          ]
+        }
+      ],
+      "gps_pose": null,
+      "rms_error": 1.052913094071699e-13,
+      "transform_matrix": [
+        [
+          1.0932475884244377,
+          0.18220793140407288,
+          -207.71704180064324
+        ],
+        [
+          -0.1366559485530546,
+          -1.1387995712754553,
+          494.69453376205774
+        ],
+        [
+          -8.038585209003212e-05,
+          0.0010807431225437654,
+          1.0
+        ]
+      ],
+      "warnings": []
+    }
+  ],
+  "active_image_index": 0,
+  "reference_path": "../sample_data/synthetic_reference.dxf",
+  "reference_type": "dxf",
+  "reference_crs_epsg": null,
+  "points": [
+    {
+      "id": 1,
+      "label": "P1",
+      "image_xy": [
+        120.0,
+        420.0
+      ],
+      "reference_xy": [
+        0.0,
+        0.0
+      ],
+      "locked": false,
+      "residual": 7.871600712005029e-14,
+      "residual_vector": [
+        -7.871600712005029e-14,
+        0.0
+      ]
+    },
+    {
+      "id": 2,
+      "label": "P2",
+      "image_xy": [
+        620.0,
+        360.0
+      ],
+      "reference_xy": [
+        400.0,
+        0.0
+      ],
+      "locked": false,
+      "residual": 1.1368683772161603e-13,
+      "residual_vector": [
+        1.1368683772161603e-13,
+        0.0
+      ]
+    },
+    {
+      "id": 3,
+      "label": "P3",
+      "image_xy": [
+        560.0,
+        90.0
+      ],
+      "reference_xy": [
+        400.0,
+        300.0
+      ],
+      "locked": false,
+      "residual": 8.038873388460929e-14,
+      "residual_vector": [
+        5.684341886080802e-14,
+        -5.684341886080802e-14
+      ]
+    },
+    {
+      "id": 4,
+      "label": "P4",
+      "image_xy": [
+        170.0,
+        120.0
+      ],
+      "reference_xy": [
+        0.0,
+        300.0
+      ],
+      "locked": false,
+      "residual": 1.3697366156699668e-13,
+      "residual_vector": [
+        -7.64008304400488e-14,
+        -1.1368683772161603e-13
+      ]
+    }
+  ],
+  "export_settings": {
+    "pixel_size": 1.0,
+    "scale_denominator": 11.811023622047244,
+    "dpi": 100.0,
+    "resampling": "bilinear",
+    "output_format": "tiff",
+    "bit_depth": 8,
+    "compression": "none",
+    "multi_layer": false,
+    "use_clip_polygon": true,
+    "use_reference_roi": true,
+    "clip_to_hull": false,
+    "include_json_sidecar": true,
+    "embed_in_tiff": true,
+    "mosaic_feather_radius_px": 0
+  },
+  "units": "mm",
+  "working_plane": null,
+  "lens_correction": null,
+  "clip_polygon": null,
+  "reference_roi": null,
+  "rms_error": 1.052913094071699e-13,
+  "transform_matrix": [
+    [
+      1.0932475884244377,
+      0.18220793140407288,
+      -207.71704180064324
+    ],
+    [
+      -0.1366559485530546,
+      -1.1387995712754553,
+      494.69453376205774
+    ],
+    [
+      -8.038585209003212e-05,
+      0.0010807431225437654,
+      1.0
+    ]
+  ],
+  "warnings": [],
+  "created": "2026-04-14T14:26:07+00:00",
+  "modified": "2026-04-14T14:26:07+00:00",
+  "_next_id": 1
+}

@@ -43,6 +43,7 @@ tests/sample_data/*.FBX
 
 # Project files (user-specific)
 *.imagerect.json
+!tests/golden/golden_project.imagerect.json
 
 # OS
 .DS_Store
