@@ -3,6 +3,32 @@
 > Wird nach jeder größeren Session aktualisiert. Codex/Claude liest
 > das als erstes wenn eine neue Session startet.
 
+## Stand 2026-04-14 spät nachts — Task 011 CI-Fix abgeschlossen
+
+### Was in dieser Session dazukam
+
+- Der erste Task-011-Push war lokal grün, aber GitHub CI schlug fehl,
+  weil `tests/golden/golden_project.imagerect.json` durch
+  `*.imagerect.json` in `.gitignore` nicht versioniert war
+- `.gitignore` bekam eine gezielte Ausnahme für genau diese
+  committete Golden-Project-Fixture
+- Der fehlende Test-Artefakt-Commit ist jetzt auf `main`:
+  `3e9ca6e` (`test: track golden project fixture`)
+
+### Was grün ist
+
+- `.venv/bin/pre-commit run --all-files`
+- `QT_QPA_PLATFORM=offscreen .venv/bin/pytest -v`
+- `QT_QPA_PLATFORM=offscreen .venv/bin/python main.py --smoke-test`
+- GitHub CI `24405956267`
+
+### Nächster Zustand
+
+- Task 011 ist jetzt vollständig verifiziert, lokal und in GitHub CI
+- Kein weiterer autonom vorbereiteter Task offen; nächster sinnvoller
+  Schritt ist wieder Andres Priorisierung oder manueller UI-Check für
+  die Änderungen aus 014/015
+
 ## Stand 2026-04-14 spät nachts — Task 011 auf direkte Freigabe umgesetzt
 
 ### Was in dieser Session dazukam
