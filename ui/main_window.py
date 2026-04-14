@@ -9,6 +9,7 @@ import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QFont, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QDockWidget,
     QFileDialog,
     QFrame,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QSplitter,
     QStackedWidget,
     QStatusBar,
@@ -27,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.export import RectificationExportResult, export_rectified_image
+from core.export import ExportCancelledError, RectificationExportResult, export_rectified_image
 from core.image import load_image
 from core.lens import LensProfile, apply_lens_correction, lens_profile_from_dict
 from core.project import ControlPoint, ExportSettings, Point2D, ProjectData, ReferenceRoi
@@ -202,30 +204,65 @@ class MainWindow(QMainWindow):
         if not file_name:
             return None
 
-        result = export_rectified_image(
-            source_image=self.source_image,
-            homography_image_to_reference=np.asarray(
-                self.project.transform_matrix, dtype=np.float64
-            ),
-            control_points=self.project.paired_points(),
-            output_path=file_name,
-            pixel_size=settings.pixel_size,
-            units=self.project.units,
-            output_format=settings.output_format,
-            dpi=settings.dpi,
-            bit_depth=settings.bit_depth,
-            resampling=settings.resampling,
-            compression=settings.compression,
-            clip_to_hull=settings.clip_to_hull,
-            clip_polygon=self.project.clip_polygon if settings.use_clip_polygon else None,
-            reference_roi=self.project.reference_roi if settings.use_reference_roi else None,
-            write_metadata_json=settings.include_json_sidecar,
-            embed_in_tiff=settings.embed_in_tiff,
-            reference_extents=reference_extents,
-            project_name=self.project.name,
-            rms_error=self.project.rms_error,
-            warnings=self.project.warnings,
-        )
+        progress_dialog = QProgressDialog("Preparing export...", "Cancel", 0, 1, self)
+        progress_dialog.setWindowTitle("Exporting")
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setValue(0)
+
+        reference_segments = None
+        if self.reference_2d is not None:
+            reference_segments = [
+                (segment.start, segment.end) for segment in self.reference_2d.segments
+            ]
+
+        def _progress_callback(current: int, total: int, message: str) -> None:
+            progress_dialog.setMaximum(max(total, 1))
+            progress_dialog.setValue(min(current, max(total, 1)))
+            progress_dialog.setLabelText(message)
+            QApplication.processEvents()
+
+        def _cancel_checker() -> bool:
+            QApplication.processEvents()
+            return bool(progress_dialog.wasCanceled())
+
+        try:
+            result = export_rectified_image(
+                source_image=self.source_image,
+                homography_image_to_reference=np.asarray(
+                    self.project.transform_matrix,
+                    dtype=np.float64,
+                ),
+                control_points=self.project.paired_points(),
+                output_path=file_name,
+                pixel_size=settings.pixel_size,
+                units=self.project.units,
+                output_format=settings.output_format,
+                dpi=settings.dpi,
+                bit_depth=settings.bit_depth,
+                resampling=settings.resampling,
+                compression=settings.compression,
+                clip_to_hull=settings.clip_to_hull,
+                clip_polygon=self.project.clip_polygon if settings.use_clip_polygon else None,
+                reference_roi=self.project.reference_roi if settings.use_reference_roi else None,
+                write_metadata_json=settings.include_json_sidecar,
+                embed_in_tiff=settings.embed_in_tiff,
+                multi_layer=settings.multi_layer,
+                reference_segments=reference_segments,
+                progress_callback=_progress_callback,
+                cancel_checker=_cancel_checker,
+                reference_extents=reference_extents,
+                project_name=self.project.name,
+                rms_error=self.project.rms_error,
+                warnings=self.project.warnings,
+            )
+        except ExportCancelledError:
+            progress_dialog.cancel()
+            self.statusBar().showMessage("Export cancelled", 5000)
+            return None
+        finally:
+            progress_dialog.close()
+
         self.statusBar().showMessage(f"Exported {result.image_path.name}", 5000)
         metadata_text = (
             f"\nMetadata: {result.metadata_path}"

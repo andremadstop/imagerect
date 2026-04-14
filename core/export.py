@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,7 +15,7 @@ import numpy as np
 from core.project import ControlPoint, unit_to_mm
 from core.writers.jpeg_writer import write_jpeg_image
 from core.writers.png_writer import write_png_image
-from core.writers.tiff_writer import write_tiff_image
+from core.writers.tiff_writer import TiffPageSpec, write_tiff_image, write_tiff_pages
 
 Point2D = tuple[float, float]
 
@@ -50,6 +50,24 @@ class RectifiedImageRenderResult:
     reference_to_canvas: np.ndarray
 
 
+@dataclass(slots=True)
+class RectifiedImageRenderPlan:
+    source_image: np.ndarray
+    width: int
+    height: int
+    pixel_size: float
+    pixel_size_reference_units: float
+    bounds_min: Point2D
+    bounds_max: Point2D
+    reference_to_canvas: np.ndarray
+    transform_to_canvas: np.ndarray
+    interpolation: int
+
+
+class ExportCancelledError(RuntimeError):
+    """Raised when the user cancels a long-running export."""
+
+
 def export_rectified_image(
     source_image: np.ndarray,
     homography_image_to_reference: np.ndarray,
@@ -68,6 +86,12 @@ def export_rectified_image(
     write_metadata_json: bool = True,
     embed_in_tiff: bool = True,
     bigtiff_threshold_bytes: int = 4 * 1024**3,
+    multi_layer: bool = False,
+    reference_segments: Sequence[tuple[Point2D, Point2D]] | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+    cancel_checker: Callable[[], bool] | None = None,
+    tile_size: int = 4096,
+    tile_trigger_size: int = 20_000,
     reference_extents: tuple[Point2D, Point2D] | None = None,
     project_name: str = "Untitled",
     rms_error: float | None = None,
@@ -75,7 +99,7 @@ def export_rectified_image(
 ) -> RectificationExportResult:
     """Warp the source image into the metric reference plane and save metadata."""
 
-    rendered = render_rectified_image(
+    plan = _prepare_render_plan(
         source_image=source_image,
         homography_image_to_reference=homography_image_to_reference,
         control_points=control_points,
@@ -83,11 +107,14 @@ def export_rectified_image(
         units=units,
         bit_depth=bit_depth,
         resampling=resampling,
-        clip_to_hull=clip_to_hull,
         clip_polygon=clip_polygon,
         reference_roi=reference_roi,
         reference_extents=reference_extents,
     )
+    use_tiled_export = (
+        output_format in {"tiff", "bigtiff"} and max(plan.width, plan.height) > tile_trigger_size
+    )
+    rendered = None if use_tiled_export else _render_plan(plan, control_points, clip_to_hull)
 
     target_path = Path(output_path)
     if output_format == "png":
@@ -109,18 +136,19 @@ def export_rectified_image(
         "output_format": output_format,
         "bit_depth": bit_depth,
         "compression": compression,
-        "pixel_size_reference_units": rendered.pixel_size_reference_units,
+        "pixel_size_reference_units": plan.pixel_size_reference_units,
         "canvas": {
-            "width": rendered.width,
-            "height": rendered.height,
-            "bounds_min": [float(rendered.bounds_min[0]), float(rendered.bounds_min[1])],
-            "bounds_max": [float(rendered.bounds_max[0]), float(rendered.bounds_max[1])],
+            "width": plan.width,
+            "height": plan.height,
+            "bounds_min": [float(plan.bounds_min[0]), float(plan.bounds_min[1])],
+            "bounds_max": [float(plan.bounds_max[0]), float(plan.bounds_max[1])],
         },
         "transform_matrix": homography_image_to_reference.tolist(),
-        "reference_to_canvas_matrix": rendered.reference_to_canvas.tolist(),
+        "reference_to_canvas_matrix": plan.reference_to_canvas.tolist(),
         "rms_error": rms_error,
         "warnings": list(warnings or []),
         "bigtiff": False,
+        "tiled_export": use_tiled_export,
         "clip_polygon": [[float(x), float(y)] for x, y in clip_polygon] if clip_polygon else None,
         "reference_roi": list(reference_roi) if reference_roi is not None else None,
         "point_pairs": [
@@ -135,27 +163,43 @@ def export_rectified_image(
             for point in control_points
         ],
     }
-    _write_output_image(
-        image_path,
-        rendered.image,
-        output_format=output_format,
-        dpi=dpi,
-        compression=compression,
-        embed_in_tiff=embed_in_tiff,
-        metadata=metadata,
-        bigtiff_threshold_bytes=bigtiff_threshold_bytes,
-    )
-    if write_metadata_json:
-        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    try:
+        _write_output_image(
+            image_path,
+            rendered=rendered,
+            plan=plan,
+            control_points=control_points,
+            output_format=output_format,
+            dpi=dpi,
+            compression=compression,
+            embed_in_tiff=embed_in_tiff,
+            metadata=metadata,
+            bit_depth=bit_depth,
+            clip_to_hull=clip_to_hull,
+            multi_layer=multi_layer,
+            reference_segments=reference_segments,
+            clip_polygon=clip_polygon,
+            bigtiff_threshold_bytes=bigtiff_threshold_bytes,
+            progress_callback=progress_callback,
+            cancel_checker=cancel_checker,
+            tile_size=tile_size,
+            use_tiled_export=use_tiled_export,
+        )
+        if write_metadata_json:
+            metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    except Exception:
+        image_path.unlink(missing_ok=True)
+        metadata_path.unlink(missing_ok=True)
+        raise
 
     return RectificationExportResult(
         image_path=image_path,
         metadata_path=metadata_path,
-        width=rendered.width,
-        height=rendered.height,
+        width=plan.width,
+        height=plan.height,
         pixel_size=pixel_size,
-        bounds_min=rendered.bounds_min,
-        bounds_max=rendered.bounds_max,
+        bounds_min=plan.bounds_min,
+        bounds_max=plan.bounds_max,
     )
 
 
@@ -174,41 +218,19 @@ def render_rectified_image(
 ) -> RectifiedImageRenderResult:
     """Warp the source image into the reference plane without writing to disk."""
 
-    source_for_warp = _convert_image_bit_depth(source_image, bit_depth)
-    if clip_polygon:
-        source_for_warp = _apply_source_polygon_mask(source_for_warp, clip_polygon)
-
-    if reference_roi is not None:
-        bounds_min, bounds_max = _roi_bounds(reference_roi)
-    else:
-        bounds_min, bounds_max = reference_extents or _bounds_from_points(
-            [point.reference_xy for point in control_points if point.reference_xy is not None]
-        )
-
-    pixel_size_units = pixel_size / unit_to_mm(units)
-    width, height, reference_to_canvas = build_canvas(bounds_min, bounds_max, pixel_size_units)
-    transform_to_canvas = reference_to_canvas @ homography_image_to_reference
-    interpolation = INTERPOLATION_FLAGS.get(resampling, cv2.INTER_LINEAR)
-    warped = cv2.warpPerspective(
-        source_for_warp,
-        transform_to_canvas,
-        (width, height),
-        flags=interpolation,
-    )
-
-    if clip_to_hull:
-        warped = _apply_hull_mask(warped, control_points, reference_to_canvas)
-
-    return RectifiedImageRenderResult(
-        image=warped,
-        width=width,
-        height=height,
+    plan = _prepare_render_plan(
+        source_image=source_image,
+        homography_image_to_reference=homography_image_to_reference,
+        control_points=control_points,
         pixel_size=pixel_size,
-        pixel_size_reference_units=pixel_size_units,
-        bounds_min=bounds_min,
-        bounds_max=bounds_max,
-        reference_to_canvas=reference_to_canvas,
+        units=units,
+        bit_depth=bit_depth,
+        resampling=resampling,
+        clip_polygon=clip_polygon,
+        reference_roi=reference_roi,
+        reference_extents=reference_extents,
     )
+    return _render_plan(plan, control_points, clip_to_hull)
 
 
 def build_canvas(
@@ -249,40 +271,79 @@ def estimate_output_size_bytes(
 
 def _write_output_image(
     image_path: Path,
-    image: np.ndarray,
     *,
+    rendered: RectifiedImageRenderResult | None,
+    plan: RectifiedImageRenderPlan,
+    control_points: Sequence[ControlPoint],
     output_format: str,
     dpi: float,
     compression: str,
     embed_in_tiff: bool,
     metadata: dict[str, object],
+    bit_depth: int,
+    clip_to_hull: bool,
+    multi_layer: bool,
+    reference_segments: Sequence[tuple[Point2D, Point2D]] | None,
+    clip_polygon: Sequence[Point2D] | None,
     bigtiff_threshold_bytes: int,
+    progress_callback: Callable[[int, int, str], None] | None,
+    cancel_checker: Callable[[], bool] | None,
+    tile_size: int,
+    use_tiled_export: bool,
 ) -> None:
     if output_format in {"tiff", "bigtiff"}:
         estimated_size = estimate_output_size_bytes(
-            image.shape[1],
-            image.shape[0],
-            _bit_depth_from_dtype(image.dtype),
+            plan.width,
+            plan.height,
+            bit_depth,
+            layer_count=4 if multi_layer else 1,
         )
         use_bigtiff = output_format == "bigtiff" or estimated_size > bigtiff_threshold_bytes
         metadata["bigtiff"] = use_bigtiff
-        write_tiff_image(
-            image_path,
-            image,
-            dpi=dpi,
-            compression=compression,
-            metadata=metadata,
-            bigtiff=use_bigtiff,
-            embed_metadata=embed_in_tiff,
-        )
+        if use_tiled_export or multi_layer:
+            _write_tiff_export(
+                image_path=image_path,
+                rendered=rendered,
+                plan=plan,
+                control_points=control_points,
+                dpi=dpi,
+                compression=compression,
+                metadata=metadata,
+                bigtiff=use_bigtiff,
+                embed_metadata=embed_in_tiff,
+                clip_to_hull=clip_to_hull,
+                multi_layer=multi_layer,
+                reference_segments=reference_segments,
+                clip_polygon=clip_polygon,
+                progress_callback=progress_callback,
+                cancel_checker=cancel_checker,
+                tile_size=tile_size,
+                use_tiled_export=use_tiled_export,
+            )
+        else:
+            if rendered is None:
+                raise ValueError("Rendered image is required for non-tiled TIFF export")
+            write_tiff_image(
+                image_path,
+                rendered.image,
+                dpi=dpi,
+                compression=compression,
+                metadata=metadata,
+                bigtiff=use_bigtiff,
+                embed_metadata=embed_in_tiff,
+            )
         return
 
     if output_format == "png":
-        write_png_image(image_path, image)
+        if rendered is None:
+            rendered = _render_plan(plan, control_points, clip_to_hull)
+        write_png_image(image_path, rendered.image)
         return
 
     if output_format == "jpeg":
-        write_jpeg_image(image_path, image)
+        if rendered is None:
+            rendered = _render_plan(plan, control_points, clip_to_hull)
+        write_jpeg_image(image_path, rendered.image)
         return
 
     raise ValueError(f"Unsupported export format: {output_format}")
@@ -326,6 +387,480 @@ def _bit_depth_from_dtype(dtype: np.dtype[np.generic]) -> int:
     if dtype in {np.dtype(np.float32), np.dtype(np.float64)}:
         return 32
     raise ValueError(f"Unsupported image dtype for export: {dtype}")
+
+
+def _prepare_render_plan(
+    source_image: np.ndarray,
+    homography_image_to_reference: np.ndarray,
+    control_points: Sequence[ControlPoint],
+    pixel_size: float,
+    units: str,
+    bit_depth: int,
+    resampling: str,
+    clip_polygon: Sequence[Point2D] | None,
+    reference_roi: tuple[float, float, float, float] | None,
+    reference_extents: tuple[Point2D, Point2D] | None,
+) -> RectifiedImageRenderPlan:
+    source_for_warp = _convert_image_bit_depth(source_image, bit_depth)
+    if clip_polygon:
+        source_for_warp = _apply_source_polygon_mask(source_for_warp, clip_polygon)
+
+    if reference_roi is not None:
+        bounds_min, bounds_max = _roi_bounds(reference_roi)
+    else:
+        bounds_min, bounds_max = reference_extents or _bounds_from_points(
+            [point.reference_xy for point in control_points if point.reference_xy is not None]
+        )
+
+    pixel_size_units = pixel_size / unit_to_mm(units)
+    width, height, reference_to_canvas = build_canvas(bounds_min, bounds_max, pixel_size_units)
+    transform_to_canvas = reference_to_canvas @ homography_image_to_reference
+    interpolation = INTERPOLATION_FLAGS.get(resampling)
+    if interpolation is None:
+        raise ValueError(f"Unsupported resampling mode: {resampling}")
+    return RectifiedImageRenderPlan(
+        source_image=source_for_warp,
+        width=width,
+        height=height,
+        pixel_size=pixel_size,
+        pixel_size_reference_units=pixel_size_units,
+        bounds_min=bounds_min,
+        bounds_max=bounds_max,
+        reference_to_canvas=reference_to_canvas,
+        transform_to_canvas=transform_to_canvas,
+        interpolation=interpolation,
+    )
+
+
+def _render_plan(
+    plan: RectifiedImageRenderPlan,
+    control_points: Sequence[ControlPoint],
+    clip_to_hull: bool,
+) -> RectifiedImageRenderResult:
+    warped = cv2.warpPerspective(
+        plan.source_image,
+        plan.transform_to_canvas,
+        (plan.width, plan.height),
+        flags=plan.interpolation,
+    )
+    if clip_to_hull:
+        warped = _apply_hull_mask(warped, control_points, plan.reference_to_canvas)
+    return RectifiedImageRenderResult(
+        image=warped,
+        width=plan.width,
+        height=plan.height,
+        pixel_size=plan.pixel_size,
+        pixel_size_reference_units=plan.pixel_size_reference_units,
+        bounds_min=plan.bounds_min,
+        bounds_max=plan.bounds_max,
+        reference_to_canvas=plan.reference_to_canvas,
+    )
+
+
+def _write_tiff_export(
+    *,
+    image_path: Path,
+    rendered: RectifiedImageRenderResult | None,
+    plan: RectifiedImageRenderPlan,
+    control_points: Sequence[ControlPoint],
+    dpi: float,
+    compression: str,
+    metadata: dict[str, object],
+    bigtiff: bool,
+    embed_metadata: bool,
+    clip_to_hull: bool,
+    multi_layer: bool,
+    reference_segments: Sequence[tuple[Point2D, Point2D]] | None,
+    clip_polygon: Sequence[Point2D] | None,
+    progress_callback: Callable[[int, int, str], None] | None,
+    cancel_checker: Callable[[], bool] | None,
+    tile_size: int,
+    use_tiled_export: bool,
+) -> None:
+    pages: list[TiffPageSpec] = []
+    page_descriptions = _layer_descriptions(metadata, multi_layer, reference_segments, clip_polygon)
+
+    if use_tiled_export:
+        page_count = len(page_descriptions)
+        progress = _TileProgress(
+            total=_tile_count(plan.width, plan.height, tile_size) * page_count,
+            callback=progress_callback,
+            cancel_checker=cancel_checker,
+        )
+        pages.append(
+            TiffPageSpec(
+                data=_iter_primary_tiles(plan, control_points, clip_to_hull, tile_size, progress),
+                shape=_page_shape(plan.height, plan.width, plan.source_image),
+                dtype=plan.source_image.dtype,
+                description=page_descriptions[0] if embed_metadata else None,
+                photometric=_photometric(plan.source_image),
+                tile=(tile_size, tile_size),
+            )
+        )
+        page_index = 1
+        if multi_layer:
+            if reference_segments:
+                pages.append(
+                    TiffPageSpec(
+                        data=_iter_reference_overlay_tiles(
+                            plan,
+                            reference_segments,
+                            tile_size,
+                            progress,
+                        ),
+                        shape=(plan.height, plan.width, 3),
+                        dtype=np.dtype(np.uint8),
+                        description=page_descriptions[page_index] if embed_metadata else None,
+                        photometric="rgb",
+                        tile=(tile_size, tile_size),
+                    )
+                )
+                page_index += 1
+            pages.append(
+                TiffPageSpec(
+                    data=_iter_control_point_tiles(plan, control_points, tile_size, progress),
+                    shape=(plan.height, plan.width, 3),
+                    dtype=np.dtype(np.uint8),
+                    description=page_descriptions[page_index] if embed_metadata else None,
+                    photometric="rgb",
+                    tile=(tile_size, tile_size),
+                )
+            )
+            page_index += 1
+            if clip_polygon:
+                pages.append(
+                    TiffPageSpec(
+                        data=_iter_clip_mask_tiles(plan, clip_polygon, tile_size, progress),
+                        shape=(plan.height, plan.width),
+                        dtype=np.dtype(np.uint8),
+                        description=page_descriptions[page_index] if embed_metadata else None,
+                        tile=(tile_size, tile_size),
+                    )
+                )
+        write_tiff_pages(image_path, pages, dpi=dpi, compression=compression, bigtiff=bigtiff)
+        return
+
+    if rendered is None:
+        rendered = _render_plan(plan, control_points, clip_to_hull)
+    pages.append(
+        TiffPageSpec(
+            data=rendered.image,
+            shape=rendered.image.shape,
+            dtype=rendered.image.dtype,
+            description=page_descriptions[0] if embed_metadata else None,
+            photometric=_photometric(rendered.image),
+        )
+    )
+    page_index = 1
+    if multi_layer:
+        if reference_segments:
+            overlay_image = _render_reference_overlay_image(plan, reference_segments)
+            pages.append(
+                TiffPageSpec(
+                    data=overlay_image,
+                    shape=overlay_image.shape,
+                    dtype=overlay_image.dtype,
+                    description=page_descriptions[page_index] if embed_metadata else None,
+                    photometric="rgb",
+                )
+            )
+            page_index += 1
+        points_image = _render_control_point_overlay_image(plan, control_points)
+        pages.append(
+            TiffPageSpec(
+                data=points_image,
+                shape=points_image.shape,
+                dtype=points_image.dtype,
+                description=page_descriptions[page_index] if embed_metadata else None,
+                photometric="rgb",
+            )
+        )
+        page_index += 1
+        if clip_polygon:
+            mask_image = _render_clip_mask_image(plan, clip_polygon)
+            pages.append(
+                TiffPageSpec(
+                    data=mask_image,
+                    shape=mask_image.shape,
+                    dtype=mask_image.dtype,
+                    description=page_descriptions[page_index] if embed_metadata else None,
+                )
+            )
+    write_tiff_pages(image_path, pages, dpi=dpi, compression=compression, bigtiff=bigtiff)
+
+
+def _iter_primary_tiles(
+    plan: RectifiedImageRenderPlan,
+    control_points: Sequence[ControlPoint],
+    clip_to_hull: bool,
+    tile_size: int,
+    progress: _TileProgress,
+) -> Iterator[np.ndarray]:
+    for tile_x, tile_y in _tile_origins(plan.width, plan.height, tile_size):
+        progress.step("Rectified image")
+        yield _render_primary_tile(plan, control_points, clip_to_hull, tile_x, tile_y, tile_size)
+
+
+def _iter_reference_overlay_tiles(
+    plan: RectifiedImageRenderPlan,
+    reference_segments: Sequence[tuple[Point2D, Point2D]],
+    tile_size: int,
+    progress: _TileProgress,
+) -> Iterator[np.ndarray]:
+    for tile_x, tile_y in _tile_origins(plan.width, plan.height, tile_size):
+        progress.step("DXF overlay")
+        yield _render_reference_overlay_tile(plan, reference_segments, tile_x, tile_y, tile_size)
+
+
+def _iter_control_point_tiles(
+    plan: RectifiedImageRenderPlan,
+    control_points: Sequence[ControlPoint],
+    tile_size: int,
+    progress: _TileProgress,
+) -> Iterator[np.ndarray]:
+    for tile_x, tile_y in _tile_origins(plan.width, plan.height, tile_size):
+        progress.step("Control points")
+        yield _render_control_point_tile(plan, control_points, tile_x, tile_y, tile_size)
+
+
+def _iter_clip_mask_tiles(
+    plan: RectifiedImageRenderPlan,
+    clip_polygon: Sequence[Point2D],
+    tile_size: int,
+    progress: _TileProgress,
+) -> Iterator[np.ndarray]:
+    for tile_x, tile_y in _tile_origins(plan.width, plan.height, tile_size):
+        progress.step("Clip mask")
+        yield _render_clip_mask_tile(plan, clip_polygon, tile_x, tile_y, tile_size)
+
+
+def _render_primary_tile(
+    plan: RectifiedImageRenderPlan,
+    control_points: Sequence[ControlPoint],
+    clip_to_hull: bool,
+    tile_x: int,
+    tile_y: int,
+    tile_size: int,
+) -> np.ndarray:
+    tile_width = min(tile_size, plan.width - tile_x)
+    tile_height = min(tile_size, plan.height - tile_y)
+    translate = np.array(
+        [[1.0, 0.0, -tile_x], [0.0, 1.0, -tile_y], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    warped = cv2.warpPerspective(
+        plan.source_image,
+        translate @ plan.transform_to_canvas,
+        (tile_width, tile_height),
+        flags=plan.interpolation,
+    )
+    if clip_to_hull:
+        warped = _apply_hull_mask(warped, control_points, translate @ plan.reference_to_canvas)
+    return _pad_tile(warped, tile_size)
+
+
+def _render_reference_overlay_image(
+    plan: RectifiedImageRenderPlan,
+    reference_segments: Sequence[tuple[Point2D, Point2D]],
+) -> np.ndarray:
+    canvas = np.zeros((plan.height, plan.width, 3), dtype=np.uint8)
+    _draw_reference_segments(canvas, reference_segments, plan.reference_to_canvas)
+    return canvas
+
+
+def _render_reference_overlay_tile(
+    plan: RectifiedImageRenderPlan,
+    reference_segments: Sequence[tuple[Point2D, Point2D]],
+    tile_x: int,
+    tile_y: int,
+    tile_size: int,
+) -> np.ndarray:
+    tile = np.zeros((tile_size, tile_size, 3), dtype=np.uint8)
+    translate = np.array(
+        [[1.0, 0.0, -tile_x], [0.0, 1.0, -tile_y], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    _draw_reference_segments(tile, reference_segments, translate @ plan.reference_to_canvas)
+    return tile
+
+
+def _render_control_point_overlay_image(
+    plan: RectifiedImageRenderPlan,
+    control_points: Sequence[ControlPoint],
+) -> np.ndarray:
+    canvas = np.zeros((plan.height, plan.width, 3), dtype=np.uint8)
+    _draw_control_points(canvas, control_points, plan.reference_to_canvas)
+    return canvas
+
+
+def _render_control_point_tile(
+    plan: RectifiedImageRenderPlan,
+    control_points: Sequence[ControlPoint],
+    tile_x: int,
+    tile_y: int,
+    tile_size: int,
+) -> np.ndarray:
+    tile = np.zeros((tile_size, tile_size, 3), dtype=np.uint8)
+    translate = np.array(
+        [[1.0, 0.0, -tile_x], [0.0, 1.0, -tile_y], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    _draw_control_points(tile, control_points, translate @ plan.reference_to_canvas)
+    return tile
+
+
+def _render_clip_mask_image(
+    plan: RectifiedImageRenderPlan,
+    clip_polygon: Sequence[Point2D],
+) -> np.ndarray:
+    mask = np.zeros((plan.height, plan.width), dtype=np.uint8)
+    projected = cv2.perspectiveTransform(
+        np.asarray(clip_polygon, dtype=np.float32).reshape(-1, 1, 2),
+        plan.transform_to_canvas.astype(np.float32),
+    ).reshape(-1, 2)
+    cv2.fillPoly(mask, [np.round(projected).astype(np.int32)], 255)
+    return mask
+
+
+def _render_clip_mask_tile(
+    plan: RectifiedImageRenderPlan,
+    clip_polygon: Sequence[Point2D],
+    tile_x: int,
+    tile_y: int,
+    tile_size: int,
+) -> np.ndarray:
+    mask = np.zeros((tile_size, tile_size), dtype=np.uint8)
+    translate = np.array(
+        [[1.0, 0.0, -tile_x], [0.0, 1.0, -tile_y], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    projected = cv2.perspectiveTransform(
+        np.asarray(clip_polygon, dtype=np.float32).reshape(-1, 1, 2),
+        (translate @ plan.transform_to_canvas).astype(np.float32),
+    ).reshape(-1, 2)
+    cv2.fillPoly(mask, [np.round(projected).astype(np.int32)], 255)
+    return mask
+
+
+def _draw_reference_segments(
+    image: np.ndarray,
+    reference_segments: Sequence[tuple[Point2D, Point2D]],
+    reference_to_canvas: np.ndarray,
+) -> None:
+    for start, end in reference_segments:
+        points = cv2.perspectiveTransform(
+            np.asarray([start, end], dtype=np.float32).reshape(-1, 1, 2),
+            reference_to_canvas.astype(np.float32),
+        ).reshape(-1, 2)
+        cv2.line(
+            image,
+            _pixel_point(points[0]),
+            _pixel_point(points[1]),
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+
+def _draw_control_points(
+    image: np.ndarray,
+    control_points: Sequence[ControlPoint],
+    reference_to_canvas: np.ndarray,
+) -> None:
+    for point in control_points:
+        if point.reference_xy is None:
+            continue
+        canvas_point = cv2.perspectiveTransform(
+            np.asarray([point.reference_xy], dtype=np.float32).reshape(-1, 1, 2),
+            reference_to_canvas.astype(np.float32),
+        ).reshape(-1, 2)[0]
+        x, y = _pixel_point(canvas_point)
+        if x < -8 or y < -8 or x > image.shape[1] + 8 or y > image.shape[0] + 8:
+            continue
+        cv2.circle(image, (x, y), 5, (0, 255, 0), -1, cv2.LINE_AA)
+        cv2.putText(
+            image,
+            point.label,
+            (x + 8, y - 6),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (0, 255, 0),
+            1,
+            cv2.LINE_AA,
+        )
+
+
+def _pad_tile(tile: np.ndarray, tile_size: int) -> np.ndarray:
+    if tile.shape[0] == tile_size and tile.shape[1] == tile_size:
+        return tile
+    if tile.ndim == 2:
+        padded = np.zeros((tile_size, tile_size), dtype=tile.dtype)
+        padded[: tile.shape[0], : tile.shape[1]] = tile
+        return padded
+    padded = np.zeros((tile_size, tile_size, tile.shape[2]), dtype=tile.dtype)
+    padded[: tile.shape[0], : tile.shape[1], :] = tile
+    return padded
+
+
+def _tile_origins(width: int, height: int, tile_size: int) -> Iterator[tuple[int, int]]:
+    for tile_y in range(0, height, tile_size):
+        for tile_x in range(0, width, tile_size):
+            yield tile_x, tile_y
+
+
+def _tile_count(width: int, height: int, tile_size: int) -> int:
+    tiles_x = math.ceil(width / tile_size)
+    tiles_y = math.ceil(height / tile_size)
+    return tiles_x * tiles_y
+
+
+def _page_shape(height: int, width: int, image: np.ndarray) -> tuple[int, ...]:
+    if image.ndim == 2:
+        return (height, width)
+    return (height, width, image.shape[2])
+
+
+def _photometric(image: np.ndarray) -> str | None:
+    if image.ndim == 3 and image.shape[2] in {3, 4}:
+        return "rgb"
+    return None
+
+
+def _layer_descriptions(
+    metadata: dict[str, object],
+    multi_layer: bool,
+    reference_segments: Sequence[tuple[Point2D, Point2D]] | None,
+    clip_polygon: Sequence[Point2D] | None,
+) -> list[str]:
+    pages = [
+        {**metadata, "layer_name": "rectified_image"},
+    ]
+    if multi_layer:
+        if reference_segments:
+            pages.append({"layer_name": "dxf_overlay"})
+        pages.append({"layer_name": "control_points"})
+        if clip_polygon:
+            pages.append({"layer_name": "clip_mask"})
+    return [json.dumps(page, indent=2) for page in pages]
+
+
+def _pixel_point(point: np.ndarray) -> tuple[int, int]:
+    return (round(float(point[0])), round(float(point[1])))
+
+
+@dataclass(slots=True)
+class _TileProgress:
+    total: int
+    callback: Callable[[int, int, str], None] | None = None
+    cancel_checker: Callable[[], bool] | None = None
+    current: int = 0
+
+    def step(self, message: str) -> None:
+        if self.cancel_checker is not None and self.cancel_checker():
+            raise ExportCancelledError("Export cancelled")
+        self.current += 1
+        if self.callback is not None:
+            self.callback(self.current, self.total, message)
 
 
 def _apply_hull_mask(

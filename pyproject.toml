@@ -66,6 +66,10 @@ module = ["cv2.*", "ezdxf.*", "pye57.*", "open3d.*", "trimesh.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+module = ["tifffile"]
+follow_imports = "skip"
+
+[[tool.mypy.overrides]]
 module = ["ui.*", "core.reference2d"]
 disable_error_code = ["attr-defined"]
 
