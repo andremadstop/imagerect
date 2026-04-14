@@ -76,6 +76,7 @@ class MainWindow(QMainWindow):
         self.reference_world_points: dict[int, np.ndarray] = {}
         self.pending_plane_points: list[np.ndarray] = []
         self.plane_pick_mode = False
+        self._current_mode = "view"
         self._history: list[ProjectData] = [self.project.clone()]
         self._history_index = 0
         self._restoring_history = False
@@ -96,6 +97,9 @@ class MainWindow(QMainWindow):
 
     def load_reference_file(self, path: str | Path) -> None:
         reference_path = Path(path)
+        if reference_path.suffix.lower() == ".dwg":
+            self._show_dwg_help_dialog()
+            return
         self.reference_2d = load_dxf(reference_path)
         self.reference_3d = None
         self.reference_world_points = {}
@@ -464,9 +468,9 @@ class MainWindow(QMainWindow):
         self.image_viewer.point_picked.connect(self._handle_image_pick)
         self.reference_viewer.point_picked.connect(self._handle_reference_pick)
         self.reference3d_viewer.point_picked.connect(self._handle_reference3d_pick)
-        self.image_viewer.cursor_message.connect(self.statusBar().showMessage)
-        self.reference_viewer.cursor_message.connect(self.statusBar().showMessage)
-        self.reference3d_viewer.cursor_message.connect(self.statusBar().showMessage)
+        self.image_viewer.cursor_message.connect(self._show_cursor_message)
+        self.reference_viewer.cursor_message.connect(self._show_cursor_message)
+        self.reference3d_viewer.cursor_message.connect(self._show_cursor_message)
         self.point_table.point_selected.connect(self._set_selected_point)
         self.point_table.label_changed.connect(self._update_point_label)
         self.point_table.lock_changed.connect(self._update_point_lock)
@@ -504,7 +508,7 @@ class MainWindow(QMainWindow):
             self,
             "Load DXF",
             str(Path.cwd()),
-            "DXF (*.dxf *.dwg)",
+            "DXF Files (*.dxf);;DWG Files — shows help (*.dwg)",
         )
         if file_name:
             self.load_reference_file(file_name)
@@ -619,6 +623,7 @@ class MainWindow(QMainWindow):
             return
         self.pending_plane_points = []
         self.plane_pick_mode = True
+        self._current_mode = "view"
         self.reference3d_viewer.set_temporary_points([])
         self.statusBar().showMessage(
             "Plane mode: pick three points on the 3D geometry",
@@ -647,6 +652,7 @@ class MainWindow(QMainWindow):
         self.project.working_plane = working_plane_to_dict(plane)
         self.pending_plane_points = []
         self.plane_pick_mode = False
+        self._current_mode = "view"
         for point_id, world_point in list(self.reference_world_points.items()):
             point = self.project.get_point(point_id)
             if point is None:
@@ -844,12 +850,16 @@ class MainWindow(QMainWindow):
         if self.project.reference_type == "dxf" or self.reference_3d is None:
             self.reference_stack.setCurrentWidget(self.reference_viewer)
             self.layer_box.show()
+            self.action_define_plane_from_points.setVisible(False)
+            self.action_define_plane_auto.setVisible(False)
             self.workflow_label.setText(
                 "Workflow: click image point, then matching DXF reference point"
             )
         else:
             self.reference_stack.setCurrentWidget(self.reference3d_viewer)
             self.layer_box.hide()
+            self.action_define_plane_from_points.setVisible(True)
+            self.action_define_plane_auto.setVisible(True)
             if self.reference_3d.working_plane is None:
                 self.workflow_label.setText(
                     "Workflow: define a working plane, then click image and 3D reference points"
@@ -863,6 +873,29 @@ class MainWindow(QMainWindow):
         enabled = self.reference_3d is not None
         self.action_define_plane_from_points.setEnabled(enabled)
         self.action_define_plane_auto.setEnabled(enabled)
+
+    def _show_dwg_help_dialog(self) -> None:
+        QMessageBox.information(
+            self,
+            "DWG Format Not Supported Directly",
+            "DWG files cannot be loaded directly (proprietary format).\n\n"
+            "Convert your DWG to DXF first using one of these tools:\n"
+            "• CloudConvert (cloudconvert.com/dwg-to-dxf) — online, no registration\n"
+            "• FreeCAD (freecadweb.org) — free, cross-platform\n"
+            "• AutoCAD Web (web.autocad.com) — free with Autodesk account\n\n"
+            'When saving as DXF, choose "AutoCAD 2013" or newer for best compatibility.',
+        )
+
+    def _show_cursor_message(self, message: str) -> None:
+        self.statusBar().showMessage(f"{message} — {self._mode_hint_text()}")
+
+    def _mode_hint_text(self) -> str:
+        mode_hints = {
+            "view": "Middle-drag: pan | Scroll: zoom | Ctrl+Click: place point",
+            "clip_polygon": "Click: add vertex | Double-click: close | Esc: cancel",
+            "reference_roi": "Drag: define region | Esc: cancel",
+        }
+        return mode_hints.get(self._current_mode, mode_hints["view"])
 
     def _record_history(self) -> None:
         if self._restoring_history:

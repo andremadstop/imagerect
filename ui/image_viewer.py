@@ -90,19 +90,25 @@ class ImageViewer(QGraphicsView):
             if point.id == selected_point_id:
                 color = QColor(ACCENT)
 
-            shadow = QGraphicsEllipseItem(x - 6.0, y - 6.0, 12.0, 12.0)
+            shadow = QGraphicsEllipseItem(-6.0, -6.0, 12.0, 12.0)
+            shadow.setPos(x, y)
+            shadow.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
             shadow.setPen(QPen(QColor(0, 0, 0, 128), 4.0))
             shadow.setBrush(Qt.NoBrush)
             self._scene.addItem(shadow)
 
-            marker = QGraphicsEllipseItem(x - 6.0, y - 6.0, 12.0, 12.0)
+            marker = QGraphicsEllipseItem(-6.0, -6.0, 12.0, 12.0)
+            marker.setPos(x, y)
+            marker.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
             marker.setPen(QPen(color, 2.0))
             marker.setBrush(QBrush(color))
             self._scene.addItem(marker)
 
             selection_ring = None
             if point.id == selected_point_id:
-                selection_ring = QGraphicsEllipseItem(x - 9.0, y - 9.0, 18.0, 18.0)
+                selection_ring = QGraphicsEllipseItem(-9.0, -9.0, 18.0, 18.0)
+                selection_ring.setPos(x, y)
+                selection_ring.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
                 selection_ring.setPen(QPen(QColor(ACCENT), 1.0))
                 selection_ring.setBrush(Qt.NoBrush)
                 self._scene.addItem(selection_ring)
@@ -113,6 +119,7 @@ class ImageViewer(QGraphicsView):
             label_font.setPixelSize(11)
             label_font.setWeight(QFont.DemiBold)
             label.setFont(label_font)
+            label.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
             label.setBrush(QBrush(QColor(TEXT_BRIGHT)))
             label.setPos(x + 8.0, y + 8.0)
             self._scene.addItem(label)

@@ -96,19 +96,25 @@ class Reference2DViewer(QGraphicsView):
             if point.id == selected_point_id:
                 color = QColor(ACCENT)
 
-            shadow = QGraphicsEllipseItem(scene.x() - 6.0, scene.y() - 6.0, 12.0, 12.0)
+            shadow = QGraphicsEllipseItem(-6.0, -6.0, 12.0, 12.0)
+            shadow.setPos(scene)
+            shadow.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
             shadow.setPen(QPen(QColor(0, 0, 0, 128), 4.0))
             shadow.setBrush(Qt.NoBrush)
             self._scene.addItem(shadow)
 
-            marker = QGraphicsEllipseItem(scene.x() - 6.0, scene.y() - 6.0, 12.0, 12.0)
+            marker = QGraphicsEllipseItem(-6.0, -6.0, 12.0, 12.0)
+            marker.setPos(scene)
+            marker.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
             marker.setPen(QPen(color, 2.0))
             marker.setBrush(QBrush(color))
             self._scene.addItem(marker)
 
             selection_ring = None
             if point.id == selected_point_id:
-                selection_ring = QGraphicsEllipseItem(scene.x() - 9.0, scene.y() - 9.0, 18.0, 18.0)
+                selection_ring = QGraphicsEllipseItem(-9.0, -9.0, 18.0, 18.0)
+                selection_ring.setPos(scene)
+                selection_ring.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
                 selection_ring.setPen(QPen(QColor(ACCENT), 1.0))
                 selection_ring.setBrush(Qt.NoBrush)
                 self._scene.addItem(selection_ring)
@@ -119,6 +125,7 @@ class Reference2DViewer(QGraphicsView):
             label_font.setPixelSize(11)
             label_font.setWeight(QFont.DemiBold)
             label.setFont(label_font)
+            label.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
             label.setBrush(QBrush(QColor(TEXT_BRIGHT)))
             label.setPos(scene.x() + 8.0, scene.y() + 8.0)
             self._scene.addItem(label)
@@ -138,6 +145,14 @@ class Reference2DViewer(QGraphicsView):
                 residual_line.setPen(QPen(QColor(ERROR), 1.2, Qt.DashLine))
                 self._scene.addItem(residual_line)
                 self._overlay_items.append(residual_line)
+
+                endpoint = QGraphicsEllipseItem(-4.0, -4.0, 8.0, 8.0)
+                endpoint.setPos(predicted_scene)
+                endpoint.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+                endpoint.setPen(QPen(QColor(ERROR), 1.2))
+                endpoint.setBrush(QBrush(QColor(ERROR)))
+                self._scene.addItem(endpoint)
+                self._overlay_items.append(endpoint)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         factor = 1.15 if event.angleDelta().y() > 0 else 1.0 / 1.15
