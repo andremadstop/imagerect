@@ -544,6 +544,12 @@ class MainWindow(QMainWindow):
         self.action_image_roi.setCheckable(True)
         self.action_reference_roi = QAction("DXF Region", self)
         self.action_reference_roi.setCheckable(True)
+        self.action_fit_reference_view = QAction("An DXF anpassen", self)
+        self.action_fit_reference_view.setShortcut(QKeySequence("Ctrl+0"))
+        self.action_fit_reference_roi_view = QAction("An ROI anpassen", self)
+        self.action_fit_reference_roi_view.setShortcut(QKeySequence("Ctrl+Shift+0"))
+        self.action_fit_image_view = QAction("Bild anpassen", self)
+        self.action_fit_image_view.setShortcut(QKeySequence("Ctrl+1"))
         self.action_define_plane_from_points = QAction("Plane From 3 Points", self)
         self.action_define_plane_auto = QAction("Plane Auto", self)
         self.action_export = QAction("Export Rectified Image", self)
@@ -589,7 +595,11 @@ class MainWindow(QMainWindow):
         menu_file.addSeparator()
         menu_file.addAction(self.action_export)
 
-        menu_view = self.menuBar().addMenu("View")
+        menu_view = self.menuBar().addMenu("Ansicht")
+        menu_view.addAction(self.action_fit_reference_view)
+        menu_view.addAction(self.action_fit_reference_roi_view)
+        menu_view.addAction(self.action_fit_image_view)
+        menu_view.addSeparator()
         menu_view.addAction(self.action_image_roi)
         menu_view.addAction(self.action_reference_roi)
         menu_view.addSeparator()
@@ -664,6 +674,13 @@ class MainWindow(QMainWindow):
         self.action_lens_correction.triggered.connect(self._open_lens_dialog)
         self.action_load_reference.triggered.connect(self._open_reference_dialog)
         self.action_load_reference3d.triggered.connect(self._open_reference3d_dialog)
+        self.action_fit_reference_view.triggered.connect(
+            self.reference_viewer.fit_reference_to_view
+        )
+        self.action_fit_reference_roi_view.triggered.connect(
+            self.reference_viewer.fit_reference_roi_to_view
+        )
+        self.action_fit_image_view.triggered.connect(self.image_viewer.fit_image_to_view)
         self.action_image_roi.toggled.connect(self._toggle_clip_polygon_mode)
         self.action_reference_roi.toggled.connect(self._toggle_reference_roi_mode)
         self.action_define_plane_from_points.triggered.connect(self._start_plane_from_3_points)
@@ -1396,6 +1413,8 @@ class MainWindow(QMainWindow):
             self.reference_stack.setCurrentWidget(self.reference_viewer)
             self.layer_box.show()
             self.action_reference_roi.setVisible(True)
+            self.action_fit_reference_view.setVisible(True)
+            self.action_fit_reference_roi_view.setVisible(True)
             self.action_define_plane_from_points.setVisible(False)
             self.action_define_plane_auto.setVisible(False)
             self.workflow_label.setText(
@@ -1405,6 +1424,8 @@ class MainWindow(QMainWindow):
             self.reference_stack.setCurrentWidget(self.reference3d_viewer)
             self.layer_box.hide()
             self.action_reference_roi.setVisible(False)
+            self.action_fit_reference_view.setVisible(False)
+            self.action_fit_reference_roi_view.setVisible(False)
             self.action_define_plane_from_points.setVisible(True)
             self.action_define_plane_auto.setVisible(True)
             if self.reference_3d.working_plane is None:
@@ -1422,7 +1443,12 @@ class MainWindow(QMainWindow):
         self.action_define_plane_auto.setEnabled(enabled)
         self.action_lens_correction.setEnabled(self.source_image_original is not None)
         self.action_image_roi.setEnabled(self.source_image is not None)
+        self.action_fit_image_view.setEnabled(self.source_image is not None)
         self.action_reference_roi.setEnabled(self.reference_2d is not None)
+        self.action_fit_reference_view.setEnabled(self.reference_2d is not None)
+        self.action_fit_reference_roi_view.setEnabled(
+            self.reference_2d is not None and self.project.reference_roi is not None
+        )
 
     def _show_dwg_help_dialog(self) -> None:
         QMessageBox.information(

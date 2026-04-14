@@ -96,12 +96,18 @@ class Reference2DViewer(QGraphicsView):
         self.resetTransform()
         self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
 
+    def fit_reference_to_view(self) -> None:
+        self._fit_scene_to_view()
+
     def _fit_roi_to_view(self) -> None:
         if self._reference_roi is None or not _is_meaningful_roi(self._reference_roi):
             return
         x0, y0, x1, y1 = self._reference_roi
         self.resetTransform()
         self.fitInView(QRectF(x0, -y1, x1 - x0, y1 - y0), Qt.KeepAspectRatio)
+
+    def fit_reference_roi_to_view(self) -> None:
+        self._fit_roi_to_view()
 
     def _apply_pending_roi_zoom(self) -> None:
         if self._reference_roi_mode or not self._roi_zoom_pending:
