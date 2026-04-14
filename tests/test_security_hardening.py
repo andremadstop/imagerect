@@ -27,7 +27,7 @@ def test_image_decompression_bomb_rejected(monkeypatch: Any, tmp_path: Path) -> 
         lambda *_args, **_kwargs: pytest.fail("OpenCV should not decode rejected images"),
     )
 
-    with pytest.raises(ValueError, match="Bild zu groß. Limit: 500 Megapixel."):
+    with pytest.raises(ValueError, match=r"Bild zu groß\. Limit: 500 Megapixel\."):
         image.load_image(image_path)
 
 
