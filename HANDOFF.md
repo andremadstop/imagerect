@@ -3,6 +3,59 @@
 > Wird nach jeder größeren Session aktualisiert. Codex/Claude liest
 > das als erstes wenn eine neue Session startet.
 
+## Stand 2026-04-14 tief nachts — Tasks 012/013/010 abgeschlossen, CI grün
+
+### Was in dieser Session dazukam
+
+- Andre hat die verbliebenen Draft-Tasks **012**, **013** und **010**
+  explizit freigegeben (`"mach alles autonom fertig"`); damit sind jetzt
+  alle von Claude vorbereiteten Restaufgaben umgesetzt
+- **Task 012 — Security Hardening** abgeschlossen:
+  500-MP-Limit für Bilder, defensive DXF/E57/OBJ-Fehlerpfade,
+  Pfad-Traversal-Schutz für relative Projektpfade, defensiver
+  Diagnose-Output sowie neue CI-Sicherheitsgates mit `bandit`,
+  `pip-audit`, Dependabot und CodeQL
+- **Task 013 — UI-Flow-Tests** abgeschlossen:
+  `pytest-qt`-Fixture plus Flows für Modifier-Click, Punktlöschung,
+  Projekt-Roundtrip, Export-Gating und Action-Descriptions
+- **Task 010 — CLI-Foundation** abgeschlossen:
+  neues `imagerect-cli` mit `export`, `validate` und `inspect`, dazu
+  Release-/Installer-Anbindung und synchronisierte User-Doku
+- Die zugehörigen Commits auf `main` sind jetzt:
+  `ac688df` (`fix: harden project inputs and cover ui regressions`),
+  `8767bc1` (`feat: add imagerect-cli headless workflows`),
+  `c4dd238` (`test: fix security hardening regex lint`)
+- Der erste Push dieser Session hatte genau **einen** CI-Fail:
+  `ruff` verlangte in `tests/test_security_hardening.py` einen raw
+  Regex-String. Das wurde direkt mit `c4dd238` nachgezogen; kein
+  Laufzeitfehler, nur Lint-Korrektur
+
+### Was grün ist
+
+- `PRE_COMMIT_HOME=/tmp/pre-commit .venv/bin/pre-commit run --all-files`
+- `QT_QPA_PLATFORM=offscreen .venv/bin/pytest -v`
+- `QT_QPA_PLATFORM=offscreen .venv/bin/python main.py --smoke-test`
+- `.venv/bin/imagerect-cli --help`
+- `.venv/bin/imagerect-cli validate tests/golden/golden_project.imagerect.json`
+- `.venv/bin/imagerect-cli export tests/golden/golden_project.imagerect.json --output build/cli-smoke --format png`
+- `.venv/bin/imagerect-cli inspect tests/sample_data/synthetic_reference.dxf`
+- GitHub CI `24412316782`
+- GitHub CodeQL `24412316785`
+- Vor dem Lint-Fix war GitHub CodeQL auf dem ersten Push bereits grün:
+  `24412200612`; die erste CI `24412200581` ist nur wegen des Regex-Lints
+  rot geworden und danach sauber nachgezogen
+
+### Nächster Zustand
+
+- Es ist **kein** von Claude vorbereiteter Rest-Task mehr offen;
+  `010`, `011`, `012`, `013`, `014` und `015` sind abgearbeitet
+- Nächster sinnvoller Schritt ist jetzt Andres manueller
+  Workstation-Test: GUI-Flow für 014/015 und CLI-Smoke für 010
+- Offene Folgehinweise außerhalb des jetzigen Scopes:
+  GitHub-Actions-Annotation zur Node-20-Deprecation,
+  CodeQL-Action-v3-Deprecation sowie die automatisch erzeugten
+  Dependabot-PRs aus der neuen Konfiguration
+
 ## Stand 2026-04-14 spät nachts — Task 011 CI-Fix abgeschlossen
 
 ### Was in dieser Session dazukam
