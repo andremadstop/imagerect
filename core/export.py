@@ -1246,8 +1246,8 @@ def _bounds_from_points(points: Iterable[Point2D | None]) -> tuple[Point2D, Poin
 
 def _nonzero_mask(image: np.ndarray) -> np.ndarray:
     if image.ndim == 2:
-        return image > 0
-    return np.any(image != 0, axis=2)
+        return np.asarray(image > 0, dtype=bool)
+    return np.asarray(np.any(image != 0, axis=2), dtype=bool)
 
 
 def _point_pairs_metadata(control_points: Sequence[ControlPoint]) -> list[dict[str, Any]]:
