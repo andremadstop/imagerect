@@ -6,7 +6,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -53,6 +53,7 @@ class LensDialog(QDialog):
         self._presets = load_presets()
         self._exif = read_exif(image_path) if image_path is not None and image_path.exists() else {}
         self._matched_preset = match_preset(self._exif, self._presets)
+        self._preview_timer: QTimer | None = None
 
         self.info_label = QLabel(_build_exif_summary(self._exif, self._matched_preset))
         self.info_label.setStyleSheet(f"color: {TEXT_DIM};")
@@ -134,7 +135,17 @@ class LensDialog(QDialog):
         layout.addWidget(buttons)
 
         self.preset_combo.currentIndexChanged.connect(self._handle_preset_changed)
-        self.grid_overlay.toggled.connect(self._update_preview)
+        for spinbox in (
+            self.focal_length,
+            self.sensor_width,
+            self.k1,
+            self.k2,
+            self.p1,
+            self.p2,
+            self.k3,
+        ):
+            spinbox.valueChanged.connect(self._schedule_preview)
+        self.grid_overlay.toggled.connect(self._schedule_preview)
         self.apply_button.clicked.connect(self._update_preview)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -168,10 +179,11 @@ class LensDialog(QDialog):
 
     def _handle_preset_changed(self, index: int) -> None:
         if index <= 0:
+            self._schedule_preview()
             return
         preset = self._presets[index - 1]
         self._apply_profile_to_widgets(preset)
-        self._update_preview()
+        self._schedule_preview()
 
     def _apply_profile_to_widgets(self, profile: LensProfile) -> None:
         self.focal_length.setValue(profile.focal_length_mm)
@@ -185,6 +197,14 @@ class LensDialog(QDialog):
     def _select_preset(self, profile_name: str) -> None:
         combo_index = self.preset_combo.findText(profile_name)
         self.preset_combo.setCurrentIndex(max(combo_index, 0))
+
+    def _schedule_preview(self) -> None:
+        if self._preview_timer is None:
+            self._preview_timer = QTimer(self)
+            self._preview_timer.setSingleShot(True)
+            self._preview_timer.setInterval(80)
+            self._preview_timer.timeout.connect(self._update_preview)
+        self._preview_timer.start()
 
     def _update_preview(self) -> None:
         corrected = apply_lens_correction(self._image, self.selected_profile())
