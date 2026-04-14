@@ -91,7 +91,7 @@ class LensDialog(QDialog):
         self.grid_overlay = QCheckBox("Grid overlay")
         self.grid_overlay.setChecked(True)
 
-        self.apply_button = QPushButton("Apply")
+        self.apply_button = QPushButton("Refresh Preview")
         self.apply_button.setProperty("primary", True)
 
         controls_row = QWidget()
@@ -179,11 +179,15 @@ class LensDialog(QDialog):
 
     def _handle_preset_changed(self, index: int) -> None:
         if index <= 0:
-            self._schedule_preview()
+            if self._preview_timer is not None:
+                self._preview_timer.stop()
+            self._update_preview()
             return
         preset = self._presets[index - 1]
         self._apply_profile_to_widgets(preset)
-        self._schedule_preview()
+        if self._preview_timer is not None:
+            self._preview_timer.stop()
+        self._update_preview()
 
     def _apply_profile_to_widgets(self, profile: LensProfile) -> None:
         self.focal_length.setValue(profile.focal_length_mm)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -135,10 +137,17 @@ class ProjectPanel(QWidget):
         reference_bounds: tuple[Point2D, Point2D] | None,
         has_clip_polygon: bool,
         has_reference_roi: bool,
+        units_locked: bool = False,
     ) -> None:
         self._reference_bounds = reference_bounds
         self._has_clip_polygon = has_clip_polygon
         self._has_reference_roi = has_reference_roi
+        self.units.setEnabled(not units_locked)
+        self.units.setToolTip(
+            "Units follow the loaded reference geometry."
+            if units_locked
+            else "Project/export units."
+        )
         self._update_region_controls()
         self._update_canvas_estimate()
 
@@ -444,7 +453,7 @@ class ProjectPanel(QWidget):
     def _populate_images(self, images: list[ImageEntry], active_index: int) -> None:
         self.image_list.clear()
         for index, entry in enumerate(images):
-            label = entry.path.rsplit("/", maxsplit=1)[-1] if entry.path else f"Image {index + 1}"
+            label = Path(entry.path).name if entry.path else f"Image {index + 1}"
             item = QListWidgetItem(label)
             item.setToolTip(entry.path or label)
             self.image_list.addItem(item)

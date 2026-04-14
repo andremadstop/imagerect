@@ -409,106 +409,112 @@ def export_mosaic_image(
         },
     }
 
-    if output_format in {"tiff", "bigtiff"}:
-        estimated_size = estimate_output_size_bytes(
-            rendered.width,
-            rendered.height,
-            bit_depth,
-            layer_count=4 if multi_layer else 1,
-        )
-        use_bigtiff = output_format == "bigtiff" or estimated_size > bigtiff_threshold_bytes
-        metadata["bigtiff"] = use_bigtiff
-        if multi_layer:
-            page_descriptions = _layer_descriptions(
-                metadata,
-                True,
-                reference_segments,
-                clip_mask_present,
+    try:
+        if output_format in {"tiff", "bigtiff"}:
+            estimated_size = estimate_output_size_bytes(
+                rendered.width,
+                rendered.height,
+                bit_depth,
+                layer_count=4 if multi_layer else 1,
             )
-            pages = [
-                TiffPageSpec(
-                    data=rendered.image,
-                    shape=rendered.image.shape,
-                    dtype=rendered.image.dtype,
-                    description=page_descriptions[0] if embed_in_tiff else None,
-                    photometric=_photometric(rendered.image),
+            use_bigtiff = output_format == "bigtiff" or estimated_size > bigtiff_threshold_bytes
+            metadata["bigtiff"] = use_bigtiff
+            if multi_layer:
+                page_descriptions = _layer_descriptions(
+                    metadata,
+                    True,
+                    reference_segments,
+                    clip_mask_present,
                 )
-            ]
-            page_index = 1
-            if reference_segments:
-                overlay_image = _render_reference_overlay_canvas(
+                pages = [
+                    TiffPageSpec(
+                        data=rendered.image,
+                        shape=rendered.image.shape,
+                        dtype=rendered.image.dtype,
+                        description=page_descriptions[0] if embed_in_tiff else None,
+                        photometric=_photometric(rendered.image),
+                    )
+                ]
+                page_index = 1
+                if reference_segments:
+                    overlay_image = _render_reference_overlay_canvas(
+                        rendered.height,
+                        rendered.width,
+                        rendered.reference_to_canvas,
+                        reference_segments,
+                    )
+                    pages.append(
+                        TiffPageSpec(
+                            data=overlay_image,
+                            shape=overlay_image.shape,
+                            dtype=overlay_image.dtype,
+                            description=page_descriptions[page_index] if embed_in_tiff else None,
+                            photometric="rgb",
+                        )
+                    )
+                    page_index += 1
+                points_image = _render_control_point_overlay_canvas(
                     rendered.height,
                     rendered.width,
                     rendered.reference_to_canvas,
-                    reference_segments,
+                    all_control_points,
                 )
                 pages.append(
                     TiffPageSpec(
-                        data=overlay_image,
-                        shape=overlay_image.shape,
-                        dtype=overlay_image.dtype,
+                        data=points_image,
+                        shape=points_image.shape,
+                        dtype=points_image.dtype,
                         description=page_descriptions[page_index] if embed_in_tiff else None,
                         photometric="rgb",
                     )
                 )
                 page_index += 1
-            points_image = _render_control_point_overlay_canvas(
-                rendered.height,
-                rendered.width,
-                rendered.reference_to_canvas,
-                all_control_points,
-            )
-            pages.append(
-                TiffPageSpec(
-                    data=points_image,
-                    shape=points_image.shape,
-                    dtype=points_image.dtype,
-                    description=page_descriptions[page_index] if embed_in_tiff else None,
-                    photometric="rgb",
-                )
-            )
-            page_index += 1
-            if clip_mask_present:
-                mask_image = _render_mosaic_clip_mask(
-                    rendered.height,
-                    rendered.width,
-                    rendered.reference_to_canvas,
-                    sources,
-                )
-                pages.append(
-                    TiffPageSpec(
-                        data=mask_image,
-                        shape=mask_image.shape,
-                        dtype=mask_image.dtype,
-                        description=page_descriptions[page_index] if embed_in_tiff else None,
+                if clip_mask_present:
+                    mask_image = _render_mosaic_clip_mask(
+                        rendered.height,
+                        rendered.width,
+                        rendered.reference_to_canvas,
+                        sources,
                     )
+                    pages.append(
+                        TiffPageSpec(
+                            data=mask_image,
+                            shape=mask_image.shape,
+                            dtype=mask_image.dtype,
+                            description=page_descriptions[page_index] if embed_in_tiff else None,
+                        )
+                    )
+                write_tiff_pages(
+                    image_path,
+                    pages,
+                    dpi=dpi,
+                    compression=compression,
+                    bigtiff=use_bigtiff,
                 )
-            write_tiff_pages(
-                image_path,
-                pages,
-                dpi=dpi,
-                compression=compression,
-                bigtiff=use_bigtiff,
-            )
+            else:
+                write_tiff_image(
+                    image_path,
+                    rendered.image,
+                    dpi=dpi,
+                    compression=compression,
+                    metadata=metadata,
+                    bigtiff=use_bigtiff,
+                    embed_metadata=embed_in_tiff,
+                )
+        elif output_format == "png":
+            write_png_image(image_path, rendered.image)
+        elif output_format == "jpeg":
+            write_jpeg_image(image_path, rendered.image)
         else:
-            write_tiff_image(
-                image_path,
-                rendered.image,
-                dpi=dpi,
-                compression=compression,
-                metadata=metadata,
-                bigtiff=use_bigtiff,
-                embed_metadata=embed_in_tiff,
-            )
-    elif output_format == "png":
-        write_png_image(image_path, rendered.image)
-    elif output_format == "jpeg":
-        write_jpeg_image(image_path, rendered.image)
-    else:
-        raise ValueError(f"Unsupported export format: {output_format}")
+            raise ValueError(f"Unsupported export format: {output_format}")
 
-    if write_metadata_json:
-        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        if write_metadata_json:
+            metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    except Exception:
+        logger.exception("Mosaic export failed | output=%s", image_path)
+        image_path.unlink(missing_ok=True)
+        metadata_path.unlink(missing_ok=True)
+        raise
 
     logger.info(
         "Completed mosaic export | image=%s | metadata=%s | size=%dx%d",

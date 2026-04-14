@@ -68,11 +68,22 @@ def load_e57(path: str | Path) -> Reference3D:
         raise ImportError("pye57 is not installed. Install imagerect[3d] to load E57 files.")
 
     document: Any | None = None
+    scan_count = 0
     try:
         document = pye57.E57(str(reference_path))
-        if document.scan_count == 0:
+        scan_count = int(document.scan_count)
+        if scan_count == 0:
             raise ValueError(f"E57 file contains no scans: {reference_path}")
-        data = document.read_scan(0, ignore_missing_fields=True, transform=True)
+        scan_points: list[np.ndarray] = []
+        for scan_index in range(scan_count):
+            data = document.read_scan(scan_index, ignore_missing_fields=True, transform=True)
+            points = np.column_stack(
+                (data["cartesianX"], data["cartesianY"], data["cartesianZ"])
+            ).astype(np.float64)
+            if len(points) > 0:
+                scan_points.append(points)
+        if not scan_points:
+            raise ValueError(f"E57 file contains no usable points: {reference_path}")
     except Exception as exc:
         logger.exception("Failed to load E57 reference | path=%s", reference_path)
         raise ValueError(f"E57-Datei konnte nicht gelesen werden: {exc}") from exc
@@ -80,12 +91,15 @@ def load_e57(path: str | Path) -> Reference3D:
         if document is not None:
             document.close()
 
-    points = np.column_stack((data["cartesianX"], data["cartesianY"], data["cartesianZ"])).astype(
-        np.float64
-    )
+    points = np.concatenate(scan_points, axis=0)
     points = _downsample_points(points, target_count=2_000_000)
     bounds_min, bounds_max = _compute_bounds(points)
-    logger.info("Loaded E57 reference | path=%s | points=%d", reference_path, len(points))
+    logger.info(
+        "Loaded E57 reference | path=%s | scans=%d | points=%d",
+        reference_path,
+        scan_count,
+        len(points),
+    )
     return Reference3D(
         points=points,
         source_type="e57",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 Point2D = tuple[float, float]
+CORRECTED_VIEW_ALPHA = 1.0
 
 
 @dataclass(slots=True)
@@ -86,7 +88,7 @@ def apply_lens_correction(
         camera_matrix,
         distortion,
         (width, height),
-        0.0,
+        CORRECTED_VIEW_ALPHA,
         (width, height),
     )
     logger.info(
@@ -149,12 +151,29 @@ def match_preset(exif: dict[str, Any], presets: list[LensProfile]) -> LensProfil
         logger.warning("Missing EXIF make/model for preset matching")
         return None
 
+    make_tokens = _normalized_tokens(make)
+    model_tokens = _normalized_tokens(model)
+    combined_tokens = make_tokens | model_tokens
+    if not combined_tokens:
+        logger.warning("No useful EXIF tokens for preset matching | exif=%s", combined)
+        return None
+
+    best_match: LensProfile | None = None
+    best_score = 0
     for preset in presets:
-        preset_key = preset.name.lower()
-        words = [word for word in preset_key.split() if len(word) > 2]
-        if words and any(word in combined for word in words):
-            logger.info("Matched lens preset | preset=%s | exif=%s", preset.name, combined)
-            return preset
+        score = _preset_match_score(
+            preset.name,
+            make_tokens=make_tokens,
+            model_tokens=model_tokens,
+            combined_tokens=combined_tokens,
+            combined=combined,
+        )
+        if score > best_score:
+            best_match = preset
+            best_score = score
+    if best_match is not None:
+        logger.info("Matched lens preset | preset=%s | exif=%s", best_match.name, combined)
+        return best_match
     logger.warning("No lens preset matched | exif=%s", combined)
     return None
 
@@ -247,7 +266,7 @@ def _camera_models(
         camera_matrix,
         distortion,
         (width, height),
-        0.0,
+        CORRECTED_VIEW_ALPHA,
         (width, height),
     )
     return camera_matrix, distortion, corrected_camera_matrix
@@ -255,3 +274,40 @@ def _camera_models(
 
 def _as_point_list(points: np.ndarray) -> list[Point2D]:
     return [(float(point[0]), float(point[1])) for point in points.reshape(-1, 2)]
+
+
+def _normalized_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", text.lower())
+        if len(token) >= 2 and not token.endswith("mm")
+    }
+
+
+def _preset_match_score(
+    preset_name: str,
+    *,
+    make_tokens: set[str],
+    model_tokens: set[str],
+    combined_tokens: set[str],
+    combined: str,
+) -> int:
+    preset_tokens = _normalized_tokens(preset_name)
+    if not preset_tokens:
+        return 0
+
+    overlap = preset_tokens & combined_tokens
+    model_overlap = overlap - make_tokens
+    if not model_overlap:
+        return 0
+
+    score = len(model_overlap) * 10 + len(overlap)
+    preset_name_normalized = " ".join(sorted(preset_tokens))
+    combined_normalized = " ".join(sorted(combined_tokens))
+    if preset_name.lower() in combined:
+        score += 20
+    if preset_name_normalized == combined_normalized:
+        score += 10
+    if model_tokens and model_overlap == (preset_tokens & model_tokens):
+        score += len(model_overlap)
+    return score

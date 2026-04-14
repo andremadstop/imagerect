@@ -76,6 +76,16 @@ def test_first_roi_triggers_autozoom(monkeypatch: Any, qtbot: Any) -> None:
     assert len(fit_calls) == 1
 
 
+def test_reference_roi_pen_is_cosmetic(qtbot: Any) -> None:
+    viewer = _viewer(qtbot)
+    viewer.set_reference(_reference(100.0, 100.0))
+    viewer.set_reference_roi((10.0, 10.0, 60.0, 60.0))
+
+    roi_item = viewer._overlay_items[-1]
+
+    assert roi_item.pen().isCosmetic() is True
+
+
 def _viewer(qtbot: Any) -> Reference2DViewer:
     viewer = Reference2DViewer()
     viewer.resize(640, 480)

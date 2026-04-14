@@ -9,6 +9,7 @@ def test_project_roundtrip(tmp_path: Path) -> None:
     project = ProjectData(name="roundtrip")
     project.image_path = "input.jpg"
     project.reference_path = "reference.dxf"
+    project.reference_world_points = {1: (10.0, 20.0, 30.0)}
     project.working_plane = {
         "origin": [10.0, 20.0, 30.0],
         "normal": [0.0, 0.0, 1.0],
@@ -18,6 +19,7 @@ def test_project_roundtrip(tmp_path: Path) -> None:
     point = project.add_point("A")
     point.image_xy = (10.5, 20.5)
     point.reference_xy = (100.0, 200.0)
+    point.enabled = False
     point.locked = True
     point.residual = 0.25
     point.residual_vector = (0.1, -0.2)
@@ -33,10 +35,12 @@ def test_project_roundtrip(tmp_path: Path) -> None:
     assert loaded.image_path == "input.jpg"
     assert loaded.reference_path == "reference.dxf"
     assert loaded.points[0].label == "A"
+    assert loaded.points[0].enabled is False
     assert loaded.points[0].locked is True
     assert loaded.points[0].image_xy == (10.5, 20.5)
     assert loaded.points[0].reference_xy == (100.0, 200.0)
     assert loaded.points[0].residual_vector == (0.1, -0.2)
+    assert loaded.reference_world_points == {1: (10.0, 20.0, 30.0)}
     assert loaded.working_plane == project.working_plane
     assert loaded.transform_matrix is not None
 
@@ -85,3 +89,25 @@ def test_project_roundtrip_preserves_multiple_images(tmp_path: Path) -> None:
     assert loaded.images[1].clip_polygon == [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]
     assert loaded.images[1].warnings == ["needs review"]
     assert loaded.image_path == "second.jpg"
+
+
+def test_project_save_relativizes_assets_against_target_file(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    assets_dir = project_dir / "assets"
+    assets_dir.mkdir(parents=True)
+
+    image_path = assets_dir / "source.jpg"
+    reference_path = assets_dir / "reference.dxf"
+    image_path.write_text("x", encoding="utf-8")
+    reference_path.write_text("0", encoding="utf-8")
+
+    project = ProjectData(name="relative-paths")
+    project.image_path = str(image_path.resolve())
+    project.reference_path = str(reference_path.resolve())
+
+    target_path = project_dir / "relative.imagerect.json"
+    project.save(target_path)
+    loaded = ProjectData.load(target_path)
+
+    assert loaded.image_path == "assets/source.jpg"
+    assert loaded.reference_path == "assets/reference.dxf"

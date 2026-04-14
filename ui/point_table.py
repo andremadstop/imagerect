@@ -23,14 +23,15 @@ class PointTable(QTableWidget):
 
     point_selected = Signal(object)
     label_changed = Signal(int, str)
+    enabled_changed = Signal(int, bool)
     lock_changed = Signal(int, bool)
     delete_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(0, 8, parent)
+        super().__init__(0, 9, parent)
         self._updating = False
         self.setHorizontalHeaderLabels(
-            ["ID", "Label", "Image X", "Image Y", "Ref X", "Ref Y", "Residual", "Lock"]
+            ["ID", "Label", "Image X", "Image Y", "Ref X", "Ref Y", "Residual", "Use", "Lock"]
         )
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -85,12 +86,21 @@ class PointTable(QTableWidget):
             residual_item.setForeground(QBrush(QColor(color_for_residual(point.residual))))
             self.setItem(row, 6, residual_item)
 
+            enabled_item = QTableWidgetItem("")
+            enabled_item.setData(Qt.UserRole, point.id)
+            enabled_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
+            enabled_item.setCheckState(Qt.Checked if point.enabled else Qt.Unchecked)
+            enabled_item.setTextAlignment(Qt.AlignCenter)
+            self.setItem(row, 7, enabled_item)
+
             lock_item = QTableWidgetItem("")
             lock_item.setData(Qt.UserRole, point.id)
             lock_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
             lock_item.setCheckState(Qt.Checked if point.locked else Qt.Unchecked)
             lock_item.setTextAlignment(Qt.AlignCenter)
-            self.setItem(row, 7, lock_item)
+            self.setItem(row, 8, lock_item)
+
+            self._apply_row_enabled_state(row, point.enabled)
 
             if point.id == selected_point_id:
                 self.selectRow(row)
@@ -134,10 +144,23 @@ class PointTable(QTableWidget):
         if id_item is None:
             return
         point_id = id_item.data(Qt.UserRole)
+        checked = item.checkState() == Qt.Checked
         if item.column() == 1:
             self.label_changed.emit(int(point_id), item.text().strip())
         elif item.column() == 7:
-            self.lock_changed.emit(int(point_id), item.checkState() == Qt.Checked)
+            self._apply_row_enabled_state(item.row(), checked)
+            self.enabled_changed.emit(int(point_id), checked)
+        elif item.column() == 8:
+            self.lock_changed.emit(int(point_id), checked)
+
+    def _apply_row_enabled_state(self, row: int, enabled: bool) -> None:
+        if enabled:
+            return
+        color = QColor("#6b7280")
+        for column in range(self.columnCount()):
+            item = self.item(row, column)
+            if item is not None:
+                item.setForeground(QBrush(color))
 
 
 def _readonly_number_item(value: float | None) -> QTableWidgetItem:

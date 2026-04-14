@@ -5,9 +5,15 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 import tifffile
 
-from core.export import export_rectified_image, render_rectified_image
+from core.export import (
+    MosaicSource,
+    export_mosaic_image,
+    export_rectified_image,
+    render_rectified_image,
+)
 from core.project import ControlPoint
 from core.transform import solve_planar_homography
 
@@ -139,6 +145,37 @@ def test_bit_depth_conversions() -> None:
     assert int(rendered_16.image.max()) > 255
     assert rendered_32.image.dtype == np.float32
     assert float(rendered_32.image.max()) <= 1.0
+
+
+def test_mosaic_export_cleans_up_partial_output_on_metadata_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    source, control_points, matrix = _identity_case()
+    mosaic_source = MosaicSource(
+        label="source",
+        source_image=source,
+        homography_image_to_reference=matrix,
+        control_points=control_points,
+    )
+
+    def fail_write_text(self: Path, *args, **kwargs) -> int:
+        raise OSError("metadata boom")
+
+    monkeypatch.setattr(Path, "write_text", fail_write_text)
+
+    with pytest.raises(OSError, match="metadata boom"):
+        export_mosaic_image(
+            sources=[mosaic_source],
+            output_path=tmp_path / "mosaic",
+            pixel_size=1.0,
+            units="mm",
+            output_format="png",
+            reference_extents=((0.0, 0.0), (63.0, 63.0)),
+        )
+
+    assert not (tmp_path / "mosaic.png").exists()
+    assert not (tmp_path / "mosaic.json").exists()
 
 
 def _identity_case() -> tuple[np.ndarray, list[ControlPoint], np.ndarray]:

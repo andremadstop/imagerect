@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from PySide6.QtWidgets import QMessageBox
+
 from core.reference2d import LayerInfo, Reference2D, Segment
 from ui.main_window import MainWindow
 
@@ -46,6 +48,27 @@ def test_fit_to_dxf_calls_viewer_method(monkeypatch: Any, qtbot: Any) -> None:
     window.action_fit_reference_view.trigger()
 
     assert fit_calls == ["dxf"]
+
+
+def test_close_prompt_can_save_dirty_project(monkeypatch: Any, qtbot: Any) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.project.name = "changed"
+    window.project.touch()
+
+    save_calls: list[str] = []
+    monkeypatch.setattr(
+        "ui.main_window.QMessageBox.question",
+        lambda *args, **kwargs: QMessageBox.Save,
+    )
+    monkeypatch.setattr(
+        window,
+        "save_project_file",
+        lambda path=None: save_calls.append("save") or True,
+    )
+
+    assert window._confirm_close_with_unsaved_changes() is True
+    assert save_calls == ["save"]
 
 
 def _reference() -> Reference2D:

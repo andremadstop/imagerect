@@ -248,7 +248,7 @@ def image_label(entry: ImageEntry, index: int) -> str:
 
 
 def _paired_points(entry: ImageEntry) -> list[Any]:
-    return [point for point in entry.points if point.is_paired]
+    return [point for point in entry.points if point.is_enabled_pair]
 
 
 def _solve_entry_homography(entry: ImageEntry) -> HomographyResult:

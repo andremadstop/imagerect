@@ -107,8 +107,8 @@ def test_save_load_roundtrip_preserves_ui_state(
     main_window._new_project()
     main_window.load_project_file(project_path)
 
-    assert main_window.project.image_path == str(image_path)
-    assert main_window.project.reference_path == str(SYNTHETIC_DXF)
+    assert main_window.project.resolve_active_image_path() == image_path
+    assert main_window.project.resolve_reference_path() == SYNTHETIC_DXF.resolve()
     assert len(main_window.project.points) == 1
     assert main_window.project.points[0].image_xy is not None
     assert main_window.project.points[0].reference_xy is not None
@@ -152,6 +152,61 @@ def test_export_enables_after_four_point_homography(main_window: Any, tmp_path: 
 
     assert main_window.action_export.isEnabled() is True
     assert main_window.action_export.toolTip() == "Export the rectified image or mosaic."
+
+
+def test_point_can_be_disabled_without_deleting(main_window: Any, tmp_path: Path) -> None:
+    image_path = _write_image(tmp_path / "source.png")
+    main_window.load_image_file(image_path)
+    main_window.load_reference_file(SYNTHETIC_DXF)
+    for index, (image_xy, reference_xy) in enumerate(
+        [
+            ((20.0, 20.0), (0.0, 0.0)),
+            ((180.0, 20.0), (400.0, 0.0)),
+            ((180.0, 140.0), (400.0, 300.0)),
+            ((20.0, 140.0), (0.0, 300.0)),
+        ],
+        start=1,
+    ):
+        point = main_window.project.add_point(f"P{index}")
+        point.image_xy = image_xy
+        point.reference_xy = reference_xy
+
+    main_window._recompute_transform()
+    main_window._refresh_ui()
+    assert main_window.action_export.isEnabled() is True
+
+    active_item = main_window.point_table.item(0, 7)
+    assert active_item is not None
+    active_item.setCheckState(Qt.Unchecked)
+
+    assert len(main_window.project.points) == 4
+    assert main_window.project.points[0].enabled is False
+    assert main_window.action_export.isEnabled() is False
+
+    active_item = main_window.point_table.item(0, 7)
+    assert active_item is not None
+    active_item.setCheckState(Qt.Checked)
+
+    assert main_window.project.points[0].enabled is True
+    assert main_window.action_export.isEnabled() is True
+
+
+def test_layer_buttons_toggle_all_visibility(main_window: Any, tmp_path: Path) -> None:
+    image_path = _write_image(tmp_path / "source.png")
+    main_window.load_image_file(image_path)
+    main_window.load_reference_file(SYNTHETIC_DXF)
+
+    main_window.layer_select_none_button.click()
+    assert all(
+        main_window.layer_list.item(index).checkState() == Qt.Unchecked
+        for index in range(main_window.layer_list.count())
+    )
+
+    main_window.layer_select_all_button.click()
+    assert all(
+        main_window.layer_list.item(index).checkState() == Qt.Checked
+        for index in range(main_window.layer_list.count())
+    )
 
 
 def test_all_main_actions_have_shortcuts_or_descriptions(main_window: Any) -> None:

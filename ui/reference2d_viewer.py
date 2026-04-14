@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 
 from core.project import ControlPoint
 from core.reference2d import LayerInfo, Reference2D, snap_to_vertex
-from ui.theme import ACCENT, BG_DARKEST, ERROR, SUCCESS, TEXT_BRIGHT, WARNING
+from ui.theme import ACCENT, BG_DARKEST, ERROR, SUCCESS, TEXT_BRIGHT, TEXT_DIM, WARNING
 
 
 class Reference2DViewer(QGraphicsView):
@@ -154,7 +154,8 @@ class Reference2DViewer(QGraphicsView):
 
     def _redraw_overlays(self) -> None:
         for item in self._overlay_items:
-            self._scene.removeItem(item)
+            if item.scene() is self._scene:
+                self._scene.removeItem(item)
         self._overlay_items.clear()
 
         for point in self._points:
@@ -163,7 +164,12 @@ class Reference2DViewer(QGraphicsView):
 
             x, y = point.reference_xy
             scene = _world_to_scene((x, y))
-            color = QColor(SUCCESS) if point.is_paired else QColor(WARNING)
+            if not point.enabled:
+                color = QColor(TEXT_DIM)
+            elif point.is_paired:
+                color = QColor(SUCCESS)
+            else:
+                color = QColor(WARNING)
             if point.id == self._selected_point_id:
                 color = QColor(ACCENT)
 
@@ -190,18 +196,19 @@ class Reference2DViewer(QGraphicsView):
                 selection_ring.setBrush(Qt.NoBrush)
                 self._scene.addItem(selection_ring)
 
-            label = QGraphicsSimpleTextItem(point.label)
+            label = QGraphicsSimpleTextItem(point.label, marker)
             label_font = QFont()
             label_font.setFamilies(["Inter", "Segoe UI", "Sans Serif"])
             label_font.setPixelSize(11)
             label_font.setWeight(QFont.DemiBold)
             label.setFont(label_font)
-            label.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
-            label.setBrush(QBrush(QColor(TEXT_BRIGHT)))
-            label.setPos(scene.x() + 8.0, scene.y() + 8.0)
-            self._scene.addItem(label)
+            label_color = QColor(
+                TEXT_BRIGHT if point.enabled or point.id == self._selected_point_id else TEXT_DIM
+            )
+            label.setBrush(QBrush(label_color))
+            label.setPos(8.0, 8.0)
             self._overlay_items.extend(
-                [item for item in (shadow, marker, selection_ring, label) if item is not None]
+                [item for item in (shadow, marker, selection_ring) if item is not None]
             )
 
             if point.residual_vector is not None:
@@ -236,17 +243,14 @@ class Reference2DViewer(QGraphicsView):
             self._scene.addItem(gps_marker)
             self._overlay_items.append(gps_marker)
 
-            label = QGraphicsSimpleTextItem(label_text)
+            label = QGraphicsSimpleTextItem(label_text, gps_marker)
             label_font = QFont()
             label_font.setFamilies(["Inter", "Segoe UI", "Sans Serif"])
             label_font.setPixelSize(11)
             label_font.setWeight(QFont.DemiBold)
             label.setFont(label_font)
-            label.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
             label.setBrush(QBrush(QColor(TEXT_BRIGHT)))
-            label.setPos(scene.x() + 10.0, scene.y() - 16.0)
-            self._scene.addItem(label)
-            self._overlay_items.append(label)
+            label.setPos(10.0, -16.0)
 
         if self._reference_roi is not None:
             self._draw_reference_roi(self._reference_roi)
@@ -257,12 +261,13 @@ class Reference2DViewer(QGraphicsView):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self.setFocus()
+        event_pos = event.position().toPoint()
         if (
             self._reference_roi_mode
             and self._reference is not None
             and event.button() == Qt.LeftButton
         ):
-            self._reference_roi_start = _scene_to_world(self.mapToScene(event.pos()))
+            self._reference_roi_start = _scene_to_world(self.mapToScene(event_pos))
             roi = (*self._reference_roi_start, *self._reference_roi_start)
             self.reference_roi_changed.emit(roi)
             event.accept()
@@ -270,14 +275,14 @@ class Reference2DViewer(QGraphicsView):
 
         if event.button() == Qt.MiddleButton:
             self._is_panning = True
-            self._last_pan_pos = event.pos()
+            self._last_pan_pos = event_pos
             self.setCursor(Qt.ClosedHandCursor)
             event.accept()
             return
 
         if event.button() == Qt.LeftButton and self._reference is not None:
             if event.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier):
-                world = _scene_to_world(self.mapToScene(event.pos()))
+                world = _scene_to_world(self.mapToScene(event_pos))
                 tolerance = 10.0 / max(abs(self.transform().m11()), 1e-6)
                 snapped = snap_to_vertex(self._reference, world[0], world[1], tolerance=tolerance)
                 if snapped is not None:
@@ -286,14 +291,14 @@ class Reference2DViewer(QGraphicsView):
                 event.accept()
                 return
 
-            existing_point_id = self._find_point_at(event.pos())
+            existing_point_id = self._find_point_at(event_pos)
             if existing_point_id is not None:
                 self.point_selected.emit(existing_point_id)
                 event.accept()
                 return
 
             self._is_panning = True
-            self._last_pan_pos = event.pos()
+            self._last_pan_pos = event_pos
             self.setCursor(Qt.ClosedHandCursor)
             event.accept()
             return
@@ -301,12 +306,13 @@ class Reference2DViewer(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        event_pos = event.position().toPoint()
         if (
             self._reference_roi_mode
             and self._reference is not None
             and self._reference_roi_start is not None
         ):
-            current = _scene_to_world(self.mapToScene(event.pos()))
+            current = _scene_to_world(self.mapToScene(event_pos))
             roi = _normalize_roi((*self._reference_roi_start, *current))
             self.reference_roi_changed.emit(roi)
             self._update_cursor_for_modifiers(event.modifiers())
@@ -314,15 +320,15 @@ class Reference2DViewer(QGraphicsView):
             return
 
         if self._is_panning:
-            delta = event.pos() - self._last_pan_pos
-            self._last_pan_pos = event.pos()
+            delta = event_pos - self._last_pan_pos
+            self._last_pan_pos = event_pos
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
             event.accept()
             return
 
         if self._reference is not None:
-            world = _scene_to_world(self.mapToScene(event.pos()))
+            world = _scene_to_world(self.mapToScene(event_pos))
             self.cursor_message.emit(
                 f"Reference {self._reference.units}: x={world[0]:.2f}, y={world[1]:.2f}"
             )
@@ -330,12 +336,13 @@ class Reference2DViewer(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        event_pos = event.position().toPoint()
         if (
             self._reference_roi_mode
             and event.button() == Qt.LeftButton
             and self._reference_roi_start is not None
         ):
-            current = _scene_to_world(self.mapToScene(event.pos()))
+            current = _scene_to_world(self.mapToScene(event_pos))
             roi = _normalize_roi((*self._reference_roi_start, *current))
             self._reference_roi_start = None
             self.reference_roi_changed.emit(roi)
@@ -388,7 +395,9 @@ class Reference2DViewer(QGraphicsView):
     def _draw_reference_roi(self, roi: tuple[float, float, float, float]) -> None:
         x0, y0, x1, y1 = _normalize_roi(roi)
         rect_item = QGraphicsRectItem(x0, -y1, x1 - x0, y1 - y0)
-        rect_item.setPen(QPen(QColor(ACCENT), 1.5, Qt.DashLine))
+        roi_pen = QPen(QColor(ACCENT), 1.5, Qt.DashLine)
+        roi_pen.setCosmetic(True)
+        rect_item.setPen(roi_pen)
         rect_item.setBrush(QBrush(Qt.NoBrush))
         self._scene.addItem(rect_item)
         self._overlay_items.append(rect_item)

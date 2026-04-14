@@ -76,6 +76,15 @@ def test_exif_match_preset_by_make_model() -> None:
     assert preset.name == "DJI Mavic 3"
 
 
+def test_exif_match_does_not_use_make_only_false_positive() -> None:
+    presets = load_presets()
+    exif = {"Make": "DJI", "Model": "M3E"}
+
+    preset = match_preset(exif, presets)
+
+    assert preset is None
+
+
 def test_lens_correction_remaps_control_points(qtbot: Any) -> None:
     profile = LensProfile(
         name="remap",
@@ -106,7 +115,7 @@ def test_lens_correction_remaps_control_points(qtbot: Any) -> None:
         camera_matrix,
         distortion,
         (320, 240),
-        0.0,
+        1.0,
         (320, 240),
     )
     expected_corrected = cv2.undistortPoints(
