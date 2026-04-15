@@ -10,11 +10,15 @@ import typer
 
 from cli.common import configure_cli_logging
 from cli.runtime import (
-    collect_project_export_sources,
     project_reference_extents,
     validate_project_file,
 )
-from core.export import export_mosaic_image, export_rectified_image
+from core.export import (
+    DEFAULT_BIGTIFF_THRESHOLD_BYTES,
+    export_mosaic_image,
+    export_rectified_image,
+)
+from core.export_sources import collect_project_export_sources, project_reference_segments
 
 
 class OutputFormat(StrEnum):
@@ -67,6 +71,7 @@ def export_command(
 
     sources, export_warnings = collect_project_export_sources(project_data)
     reference_extents = project_reference_extents(project_data)
+    reference_segments = project_reference_segments(project_data)
     target_path = (
         output if output is not None else project.parent / f"{project_data.name}_rectified"
     )
@@ -87,6 +92,7 @@ def export_command(
             write_metadata_json=settings.include_json_sidecar,
             embed_in_tiff=settings.embed_in_tiff,
             multi_layer=settings.multi_layer,
+            reference_segments=reference_segments,
             reference_extents=reference_extents,
             project_name=project_data.name,
             warnings=export_warnings,
@@ -111,7 +117,9 @@ def export_command(
             reference_roi=project_data.reference_roi if settings.use_reference_roi else None,
             write_metadata_json=settings.include_json_sidecar,
             embed_in_tiff=settings.embed_in_tiff,
+            bigtiff_threshold_bytes=DEFAULT_BIGTIFF_THRESHOLD_BYTES,
             multi_layer=settings.multi_layer,
+            reference_segments=reference_segments,
             reference_extents=reference_extents,
             project_name=project_data.name,
             rms_error=source.rms_error,

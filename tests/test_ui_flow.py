@@ -89,6 +89,17 @@ def test_new_project_clears_state(main_window: Any, qtbot: Any, tmp_path: Path) 
     assert main_window.action_open_review_workspace.isEnabled() is True
 
 
+def test_new_project_clears_last_export_state(main_window: Any, tmp_path: Path) -> None:
+    main_window._last_export_path = tmp_path / "old-export.tiff"
+    main_window._last_export_metadata_path = tmp_path / "old-export.json"
+
+    main_window._new_project()
+
+    summary = main_window.project_summary()
+    assert summary["last_export_path"] == ""
+    assert summary["last_export_metadata_path"] == ""
+
+
 def test_save_load_roundtrip_preserves_ui_state(
     main_window: Any,
     qtbot: Any,

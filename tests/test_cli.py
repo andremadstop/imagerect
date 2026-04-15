@@ -5,9 +5,12 @@ import shutil
 from pathlib import Path
 
 import cv2
+import pytest
 from typer.testing import CliRunner
 
+from cli import commands_export
 from cli.main import app
+from core.export import RectificationExportResult
 from core.project import ProjectData
 from tests.golden_case import (
     build_golden_control_points,
@@ -72,6 +75,47 @@ def test_export_command_writes_rectified_output(tmp_path: Path) -> None:
     assert (tmp_path / "cli-export.png").exists()
     assert (tmp_path / "cli-export.json").exists()
     assert "Exported image:" in result.output
+
+
+def test_export_command_passes_reference_segments_for_tiff_exports(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_path = _write_cli_project(tmp_path)
+    project = ProjectData.load(project_path)
+    project.export_settings.multi_layer = True
+    project.save(project_path)
+
+    captured: dict[str, object] = {}
+
+    def fake_export_rectified_image(**kwargs: object) -> RectificationExportResult:
+        captured.update(kwargs)
+        return RectificationExportResult(
+            image_path=tmp_path / "cli-export.tiff",
+            metadata_path=tmp_path / "cli-export.json",
+            width=100,
+            height=100,
+            pixel_size=1.0,
+            bounds_min=(0.0, 0.0),
+            bounds_max=(100.0, 100.0),
+        )
+
+    monkeypatch.setattr(commands_export, "export_rectified_image", fake_export_rectified_image)
+
+    result = runner.invoke(
+        app,
+        [
+            "export",
+            str(project_path),
+            "--output",
+            str(tmp_path / "cli-export"),
+            "--format",
+            "tiff",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["reference_segments"]
 
 
 def test_inspect_image_reports_dimensions(tmp_path: Path) -> None:

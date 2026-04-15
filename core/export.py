@@ -21,6 +21,7 @@ from core.writers.tiff_writer import TiffPageSpec, write_tiff_image, write_tiff_
 
 logger = logging.getLogger(__name__)
 Point2D = tuple[float, float]
+DEFAULT_BIGTIFF_THRESHOLD_BYTES = 4 * 1024**3
 
 INTERPOLATION_FLAGS = {
     "nearest": cv2.INTER_NEAREST,
@@ -44,6 +45,7 @@ class RectificationExportResult:
 @dataclass(slots=True)
 class RectifiedImageRenderResult:
     image: np.ndarray
+    valid_mask: np.ndarray
     width: int
     height: int
     pixel_size: float
@@ -56,6 +58,7 @@ class RectifiedImageRenderResult:
 @dataclass(slots=True)
 class RectifiedImageRenderPlan:
     source_image: np.ndarray
+    source_mask: np.ndarray
     width: int
     height: int
     pixel_size: float
@@ -84,125 +87,102 @@ class MosaicSource:
     warnings: Sequence[str] = ()
 
 
+@dataclass(slots=True)
+class ExportContext:
+    """Configuration and state for a single rectification export."""
+
+    output_path: Path
+    pixel_size: float
+    units: str
+    output_format: str = "tiff"
+    dpi: float = 300.0
+    bit_depth: int = 8
+    resampling: str = "bilinear"
+    compression: str = "none"
+    clip_to_hull: bool = False
+    clip_polygon: Sequence[Point2D] | None = None
+    reference_roi: tuple[float, float, float, float] | None = None
+    write_metadata_json: bool = True
+    embed_in_tiff: bool = True
+    bigtiff_threshold_bytes: int = DEFAULT_BIGTIFF_THRESHOLD_BYTES
+    multi_layer: bool = False
+    reference_segments: Sequence[tuple[Point2D, Point2D]] | None = None
+    progress_callback: Callable[[int, int, str], None] | None = None
+    cancel_checker: Callable[[], bool] | None = None
+    tile_size: int = 4096
+    tile_trigger_size: int = 20_000
+    reference_extents: tuple[Point2D, Point2D] | None = None
+    project_name: str = "Untitled"
+    rms_error: float | None = None
+    warnings: Sequence[str] | None = None
+    gps_pose: dict[str, Any] | None = None
+    camera_pose: dict[str, Any] | None = None
+
+
 def export_rectified_image(
     source_image: np.ndarray,
     homography_image_to_reference: np.ndarray,
     control_points: Sequence[ControlPoint],
-    output_path: str | Path,
-    pixel_size: float,
-    units: str,
-    output_format: str = "tiff",
-    dpi: float = 300.0,
-    bit_depth: int = 8,
-    resampling: str = "bilinear",
-    compression: str = "none",
-    clip_to_hull: bool = False,
-    clip_polygon: Sequence[Point2D] | None = None,
-    reference_roi: tuple[float, float, float, float] | None = None,
-    write_metadata_json: bool = True,
-    embed_in_tiff: bool = True,
-    bigtiff_threshold_bytes: int = 4 * 1024**3,
-    multi_layer: bool = False,
-    reference_segments: Sequence[tuple[Point2D, Point2D]] | None = None,
-    progress_callback: Callable[[int, int, str], None] | None = None,
-    cancel_checker: Callable[[], bool] | None = None,
-    tile_size: int = 4096,
-    tile_trigger_size: int = 20_000,
-    reference_extents: tuple[Point2D, Point2D] | None = None,
-    project_name: str = "Untitled",
-    rms_error: float | None = None,
-    warnings: Sequence[str] | None = None,
-    gps_pose: dict[str, Any] | None = None,
-    camera_pose: dict[str, Any] | None = None,
+    **kwargs: Any,
 ) -> RectificationExportResult:
     """Warp the source image into the metric reference plane and save metadata."""
 
+    ctx = ExportContext(**kwargs)
     logger.info(
         "Starting rectified export | output=%s | format=%s | units=%s | bit_depth=%d",
-        output_path,
-        output_format,
-        units,
-        bit_depth,
+        ctx.output_path,
+        ctx.output_format,
+        ctx.units,
+        ctx.bit_depth,
     )
+
     plan = _prepare_render_plan(
         source_image=source_image,
         homography_image_to_reference=homography_image_to_reference,
         control_points=control_points,
-        pixel_size=pixel_size,
-        units=units,
-        bit_depth=bit_depth,
-        resampling=resampling,
-        clip_polygon=clip_polygon,
-        reference_roi=reference_roi,
-        reference_extents=reference_extents,
+        pixel_size=ctx.pixel_size,
+        units=ctx.units,
+        bit_depth=ctx.bit_depth,
+        resampling=ctx.resampling,
+        clip_polygon=ctx.clip_polygon,
+        reference_roi=ctx.reference_roi,
+        reference_extents=ctx.reference_extents,
     )
+
     use_tiled_export = (
-        output_format in {"tiff", "bigtiff"} and max(plan.width, plan.height) > tile_trigger_size
+        ctx.output_format in {"tiff", "bigtiff"}
+        and max(plan.width, plan.height) > ctx.tile_trigger_size
     )
-    rendered = None if use_tiled_export else _render_plan(plan, control_points, clip_to_hull)
+    rendered = None if use_tiled_export else _render_plan(plan, control_points, ctx.clip_to_hull)
 
-    target_path = Path(output_path)
-    if output_format == "png":
-        image_path = target_path.with_suffix(".png")
-    elif output_format == "jpeg":
-        image_path = target_path.with_suffix(".jpg")
-    else:
-        image_path = target_path.with_suffix(".tiff")
-    metadata_path = target_path.with_suffix(".json")
-    image_path.parent.mkdir(parents=True, exist_ok=True)
-    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    image_path, metadata_path = _prepare_output_paths(ctx.output_path, ctx.output_format)
+    metadata = _build_export_metadata(
+        ctx, plan, homography_image_to_reference, use_tiled_export, control_points
+    )
 
-    metadata = {
-        "project_name": project_name,
-        "timestamp": datetime.now(UTC).replace(microsecond=0).isoformat(),
-        "units": units,
-        "pixel_size": pixel_size,
-        "dpi": dpi,
-        "output_format": output_format,
-        "bit_depth": bit_depth,
-        "compression": compression,
-        "pixel_size_reference_units": plan.pixel_size_reference_units,
-        "canvas": {
-            "width": plan.width,
-            "height": plan.height,
-            "bounds_min": [float(plan.bounds_min[0]), float(plan.bounds_min[1])],
-            "bounds_max": [float(plan.bounds_max[0]), float(plan.bounds_max[1])],
-        },
-        "transform_matrix": homography_image_to_reference.tolist(),
-        "reference_to_canvas_matrix": plan.reference_to_canvas.tolist(),
-        "rms_error": rms_error,
-        "warnings": list(warnings or []),
-        "gps_pose": gps_pose,
-        "camera_pose": camera_pose,
-        "bigtiff": False,
-        "tiled_export": use_tiled_export,
-        "clip_polygon": [[float(x), float(y)] for x, y in clip_polygon] if clip_polygon else None,
-        "reference_roi": list(reference_roi) if reference_roi is not None else None,
-        "point_pairs": _point_pairs_metadata(control_points),
-    }
     try:
         _write_output_image(
             image_path,
             rendered=rendered,
             plan=plan,
             control_points=control_points,
-            output_format=output_format,
-            dpi=dpi,
-            compression=compression,
-            embed_in_tiff=embed_in_tiff,
+            output_format=ctx.output_format,
+            dpi=ctx.dpi,
+            compression=ctx.compression,
+            embed_in_tiff=ctx.embed_in_tiff,
             metadata=metadata,
-            bit_depth=bit_depth,
-            clip_to_hull=clip_to_hull,
-            multi_layer=multi_layer,
-            reference_segments=reference_segments,
-            clip_polygon=clip_polygon,
-            bigtiff_threshold_bytes=bigtiff_threshold_bytes,
-            progress_callback=progress_callback,
-            cancel_checker=cancel_checker,
-            tile_size=tile_size,
+            bit_depth=ctx.bit_depth,
+            clip_to_hull=ctx.clip_to_hull,
+            multi_layer=ctx.multi_layer,
+            reference_segments=ctx.reference_segments,
+            clip_polygon=ctx.clip_polygon,
+            bigtiff_threshold_bytes=ctx.bigtiff_threshold_bytes,
+            progress_callback=ctx.progress_callback,
+            cancel_checker=ctx.cancel_checker,
+            tile_size=ctx.tile_size,
             use_tiled_export=use_tiled_export,
         )
-        if write_metadata_json:
+        if ctx.write_metadata_json:
             metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     except Exception:
         logger.exception("Rectified export failed | output=%s", image_path)
@@ -211,9 +191,8 @@ def export_rectified_image(
         raise
 
     logger.info(
-        "Completed rectified export | image=%s | metadata=%s | size=%dx%d",
+        "Completed rectified export | image=%s | size=%dx%d",
         image_path,
-        metadata_path,
         plan.width,
         plan.height,
     )
@@ -222,10 +201,60 @@ def export_rectified_image(
         metadata_path=metadata_path,
         width=plan.width,
         height=plan.height,
-        pixel_size=pixel_size,
+        pixel_size=ctx.pixel_size,
         bounds_min=plan.bounds_min,
         bounds_max=plan.bounds_max,
     )
+
+
+def _prepare_output_paths(output_path: str | Path, output_format: str) -> tuple[Path, Path]:
+    target_path = Path(output_path)
+    suffixes = {"png": ".png", "jpeg": ".jpg"}
+    image_path = target_path.with_suffix(suffixes.get(output_format, ".tiff"))
+    metadata_path = target_path.with_suffix(".json")
+
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    return image_path, metadata_path
+
+
+def _build_export_metadata(
+    ctx: ExportContext,
+    plan: RectifiedImageRenderPlan,
+    homography: np.ndarray,
+    use_tiled_export: bool,
+    control_points: Sequence[ControlPoint],
+) -> dict[str, Any]:
+    return {
+        "project_name": ctx.project_name,
+        "timestamp": datetime.now(UTC).replace(microsecond=0).isoformat(),
+        "units": ctx.units,
+        "pixel_size": ctx.pixel_size,
+        "dpi": ctx.dpi,
+        "output_format": ctx.output_format,
+        "bit_depth": ctx.bit_depth,
+        "compression": ctx.compression,
+        "pixel_size_reference_units": plan.pixel_size_reference_units,
+        "canvas": {
+            "width": plan.width,
+            "height": plan.height,
+            "bounds_min": [float(plan.bounds_min[0]), float(plan.bounds_min[1])],
+            "bounds_max": [float(plan.bounds_max[0]), float(plan.bounds_max[1])],
+        },
+        "transform_matrix": homography.tolist(),
+        "reference_to_canvas_matrix": plan.reference_to_canvas.tolist(),
+        "rms_error": ctx.rms_error,
+        "warnings": list(ctx.warnings or []),
+        "gps_pose": ctx.gps_pose,
+        "camera_pose": ctx.camera_pose,
+        "bigtiff": False,
+        "tiled_export": use_tiled_export,
+        "clip_polygon": [[float(x), float(y)] for x, y in ctx.clip_polygon]
+        if ctx.clip_polygon
+        else None,
+        "reference_roi": list(ctx.reference_roi) if ctx.reference_roi is not None else None,
+        "point_pairs": _point_pairs_metadata(control_points),
+    }
 
 
 def render_rectified_image(
@@ -296,12 +325,20 @@ def render_mosaic_image(
         for source in sources
     ]
     mosaic = rendered_layers[0].image.copy()
+    mosaic_mask = rendered_layers[0].valid_mask.copy()
     for layer in rendered_layers[1:]:
-        mosaic = _composite_mosaic(mosaic, layer.image, blend_radius_px)
+        mosaic, mosaic_mask = _composite_mosaic(
+            mosaic,
+            mosaic_mask,
+            layer.image,
+            layer.valid_mask,
+            blend_radius_px,
+        )
 
     first = rendered_layers[0]
     return RectifiedImageRenderResult(
         image=mosaic,
+        valid_mask=mosaic_mask,
         width=first.width,
         height=first.height,
         pixel_size=first.pixel_size,
@@ -326,7 +363,7 @@ def export_mosaic_image(
     reference_roi: tuple[float, float, float, float] | None = None,
     write_metadata_json: bool = True,
     embed_in_tiff: bool = True,
-    bigtiff_threshold_bytes: int = 4 * 1024**3,
+    bigtiff_threshold_bytes: int = DEFAULT_BIGTIFF_THRESHOLD_BYTES,
     multi_layer: bool = False,
     reference_segments: Sequence[tuple[Point2D, Point2D]] | None = None,
     reference_extents: tuple[Point2D, Point2D] | None = None,
@@ -703,8 +740,10 @@ def _prepare_render_plan(
     reference_extents: tuple[Point2D, Point2D] | None,
 ) -> RectifiedImageRenderPlan:
     source_for_warp = _convert_image_bit_depth(source_image, bit_depth)
+    source_mask = np.full(source_image.shape[:2], 255, dtype=np.uint8)
     if clip_polygon:
-        source_for_warp = _apply_source_polygon_mask(source_for_warp, clip_polygon)
+        source_mask = _render_source_polygon_mask(source_image.shape[:2], clip_polygon)
+        source_for_warp = _apply_binary_mask(source_for_warp, source_mask)
 
     if reference_roi is not None:
         bounds_min, bounds_max = _roi_bounds(reference_roi)
@@ -721,6 +760,7 @@ def _prepare_render_plan(
         raise ValueError(f"Unsupported resampling mode: {resampling}")
     return RectifiedImageRenderPlan(
         source_image=source_for_warp,
+        source_mask=source_mask,
         width=width,
         height=height,
         pixel_size=pixel_size,
@@ -744,10 +784,23 @@ def _render_plan(
         (plan.width, plan.height),
         flags=plan.interpolation,
     )
+    valid_mask = cv2.warpPerspective(
+        plan.source_mask,
+        plan.transform_to_canvas,
+        (plan.width, plan.height),
+        flags=cv2.INTER_NEAREST,
+    )
     if clip_to_hull:
-        warped = _apply_hull_mask(warped, control_points, plan.reference_to_canvas)
+        hull_mask = _render_hull_mask(
+            warped.shape[:2],
+            control_points,
+            plan.reference_to_canvas,
+        )
+        warped = _apply_binary_mask(warped, hull_mask)
+        valid_mask = cv2.bitwise_and(valid_mask, hull_mask)
     return RectifiedImageRenderResult(
         image=warped,
+        valid_mask=np.asarray(valid_mask > 0, dtype=bool),
         width=plan.width,
         height=plan.height,
         pixel_size=plan.pixel_size,
@@ -760,27 +813,27 @@ def _render_plan(
 
 def _composite_mosaic(
     base_image: np.ndarray,
+    base_mask: np.ndarray,
     new_image: np.ndarray,
+    new_mask: np.ndarray,
     blend_radius_px: int,
-) -> np.ndarray:
-    new_mask = _nonzero_mask(new_image)
+) -> tuple[np.ndarray, np.ndarray]:
     if not np.any(new_mask):
-        return base_image
+        return base_image, base_mask
 
     composite = base_image.copy()
     if blend_radius_px <= 0:
         composite[new_mask] = new_image[new_mask]
-        return composite
+        return composite, np.asarray(base_mask | new_mask, dtype=bool)
 
-    base_mask = _nonzero_mask(base_image)
     if not np.any(base_mask):
         composite[new_mask] = new_image[new_mask]
-        return composite
+        return composite, np.asarray(new_mask, dtype=bool)
 
     overlap = base_mask & new_mask
     if not np.any(overlap):
         composite[new_mask] = new_image[new_mask]
-        return composite
+        return composite, np.asarray(base_mask | new_mask, dtype=bool)
 
     base_distance = cv2.distanceTransform(base_mask.astype(np.uint8), cv2.DIST_L2, 3)
     new_distance = cv2.distanceTransform(new_mask.astype(np.uint8), cv2.DIST_L2, 3)
@@ -804,7 +857,7 @@ def _composite_mosaic(
         composite = np.where(new_mask[:, :, None], new_float, base_float)
         composite[overlap] = blended[overlap]
 
-    return composite.astype(base_image.dtype)
+    return composite.astype(base_image.dtype), np.asarray(base_mask | new_mask, dtype=bool)
 
 
 def _write_tiff_export(
@@ -1010,7 +1063,12 @@ def _render_primary_tile(
         flags=plan.interpolation,
     )
     if clip_to_hull:
-        warped = _apply_hull_mask(warped, control_points, translate @ plan.reference_to_canvas)
+        hull_mask = _render_hull_mask(
+            warped.shape[:2],
+            control_points,
+            translate @ plan.reference_to_canvas,
+        )
+        warped = _apply_binary_mask(warped, hull_mask)
     return _pad_tile(warped, tile_size)
 
 
@@ -1223,8 +1281,8 @@ class _TileProgress:
             self.callback(self.current, self.total, message)
 
 
-def _apply_hull_mask(
-    warped_image: np.ndarray,
+def _render_hull_mask(
+    image_shape: tuple[int, int],
     control_points: Sequence[ControlPoint],
     reference_to_canvas: np.ndarray,
 ) -> np.ndarray:
@@ -1233,15 +1291,19 @@ def _apply_hull_mask(
         dtype=np.float64,
     )
     if len(hull_points) < 3:
-        return warped_image
+        return np.full(image_shape, 255, dtype=np.uint8)
 
     hull = cv2.convexHull(hull_points.astype(np.float32))
     hull_canvas = cv2.perspectiveTransform(hull.reshape(-1, 1, 2), reference_to_canvas)
     hull_canvas_int = np.round(hull_canvas).astype(np.int32)
-    mask = np.zeros(warped_image.shape[:2], dtype=np.uint8)
+    mask = np.zeros(image_shape, dtype=np.uint8)
     cv2.fillPoly(mask, [hull_canvas_int.reshape(-1, 2)], 255)
 
-    masked = warped_image.copy()
+    return mask
+
+
+def _apply_binary_mask(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    masked = image.copy()
     if masked.ndim == 2:
         masked[mask == 0] = 0
     else:
@@ -1249,22 +1311,17 @@ def _apply_hull_mask(
     return masked
 
 
-def _apply_source_polygon_mask(
-    source_image: np.ndarray,
+def _render_source_polygon_mask(
+    image_shape: tuple[int, int],
     clip_polygon: Sequence[Point2D],
 ) -> np.ndarray:
     polygon = np.asarray(clip_polygon, dtype=np.float32)
     if len(polygon) < 3:
-        return source_image
+        return np.full(image_shape, 255, dtype=np.uint8)
 
-    mask = np.zeros(source_image.shape[:2], dtype=np.uint8)
+    mask = np.zeros(image_shape, dtype=np.uint8)
     cv2.fillPoly(mask, [np.round(polygon).astype(np.int32)], 255)
-    masked = source_image.copy()
-    if masked.ndim == 2:
-        masked[mask == 0] = 0
-    else:
-        masked[mask == 0] = (0,) * masked.shape[2]
-    return masked
+    return mask
 
 
 def _roi_bounds(reference_roi: tuple[float, float, float, float]) -> tuple[Point2D, Point2D]:
@@ -1279,12 +1336,6 @@ def _bounds_from_points(points: Iterable[Point2D | None]) -> tuple[Point2D, Poin
     xs = [point[0] for point in valid_points]
     ys = [point[1] for point in valid_points]
     return (min(xs), min(ys)), (max(xs), max(ys))
-
-
-def _nonzero_mask(image: np.ndarray) -> np.ndarray:
-    if image.ndim == 2:
-        return np.asarray(image > 0, dtype=bool)
-    return np.asarray(np.any(image != 0, axis=2), dtype=bool)
 
 
 def _point_pairs_metadata(control_points: Sequence[ControlPoint]) -> list[dict[str, Any]]:

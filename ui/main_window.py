@@ -8,7 +8,6 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
-import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QFont, QKeySequence
@@ -34,11 +33,18 @@ from PySide6.QtWidgets import (
 
 from core.diagnose import build_diagnose_package
 from core.export import (
+    DEFAULT_BIGTIFF_THRESHOLD_BYTES,
     ExportCancelledError,
-    MosaicSource,
     RectificationExportResult,
     export_mosaic_image,
     export_rectified_image,
+)
+from core.export_sources import (
+    collect_project_export_sources,
+    ensure_entry_gps_pose,
+    homography_for_entry,
+    image_label,
+    project_reference_segments,
 )
 from core.image import load_image
 from core.lens import (
@@ -48,7 +54,7 @@ from core.lens import (
     remap_points_between_profiles,
 )
 from core.logging_setup import log_directory
-from core.pose import build_camera_pose, extract_gps_pose, gps_offset_meters, gps_to_reference_xy
+from core.pose import extract_gps_pose, gps_offset_meters, gps_to_reference_xy
 from core.project import (
     ControlPoint,
     ExportSettings,
@@ -132,13 +138,10 @@ class MainWindow(QMainWindow):
     def load_image_file(self, path: str | Path) -> None:
         image_path = Path(path).resolve()
         logger.info("Loading image | path=%s", image_path)
-        self.project.sync_to_active_image()
-        self._activate_or_create_image(image_path)
+        # Add or update image in project
+        entry = self.project.add_image(image_path)
         self.source_image_original = load_image(image_path)
-        if self.project.images:
-            self.project.images[self.project.active_image_index].gps_pose = extract_gps_pose(
-                image_path
-            )
+        entry.gps_pose = extract_gps_pose(image_path)
         self._refresh_source_image()
         if self.project.name == "Untitled":
             self.project.name = image_path.stem
@@ -205,7 +208,6 @@ class MainWindow(QMainWindow):
         project_path = Path(path)
         logger.info("Loading project | path=%s", project_path)
         self.project = ProjectData.load(project_path)
-        self.project.sync_from_active_image()
         self.project_path = project_path
         self._last_export_path = None
         self._last_export_metadata_path = None
@@ -266,7 +268,6 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _project_state_snapshot(self) -> str:
-        self.project.sync_to_active_image()
         return json.dumps(self.project.to_dict(), sort_keys=True, ensure_ascii=False)
 
     def _mark_project_clean(self) -> None:
@@ -294,9 +295,8 @@ class MainWindow(QMainWindow):
         return self._confirm_close_with_unsaved_changes()
 
     def run_export(self) -> RectificationExportResult | None:
-        self.project.sync_to_active_image()
         settings = self.project.export_settings
-        sources, export_warnings = self._collect_export_sources()
+        sources, export_warnings = collect_project_export_sources(self.project)
         reference_extents = self._current_reference_extents()
         default_path = Path.cwd() / f"{self.project.name}_rectified"
         file_name, _ = QFileDialog.getSaveFileName(
@@ -314,11 +314,7 @@ class MainWindow(QMainWindow):
             settings.output_format,
         )
 
-        reference_segments = None
-        if self.reference_2d is not None:
-            reference_segments = [
-                (segment.start, segment.end) for segment in self.reference_2d.segments
-            ]
+        reference_segments = self._reference_segments()
 
         source = sources[0]
         combined_warnings = list(dict.fromkeys([*export_warnings, *source.warnings]))
@@ -338,7 +334,7 @@ class MainWindow(QMainWindow):
                 reference_roi=self.project.reference_roi if settings.use_reference_roi else None,
                 write_metadata_json=settings.include_json_sidecar,
                 embed_in_tiff=settings.embed_in_tiff,
-                bigtiff_threshold_bytes=4 * 1024**3,
+                bigtiff_threshold_bytes=DEFAULT_BIGTIFF_THRESHOLD_BYTES,
                 multi_layer=settings.multi_layer,
                 reference_segments=reference_segments,
                 reference_extents=reference_extents,
@@ -428,7 +424,6 @@ class MainWindow(QMainWindow):
             return False
 
     def project_summary(self) -> dict[str, object]:
-        self.project.ensure_image_entries()
         reference_name = (
             Path(self.project.reference_path).name if self.project.reference_path else "keine"
         )
@@ -450,100 +445,11 @@ class MainWindow(QMainWindow):
                 str(self._last_export_metadata_path) if self._last_export_metadata_path else ""
             ),
             "images": [
-                self._entry_label(entry, index)
+                image_label(self.project, entry, index)
                 for index, entry in enumerate(self.project.images)
                 if entry.path
             ],
         }
-
-    def run_synthetic_smoke_test(self, output_root: Path) -> RectificationExportResult:
-        """Exercise the window, solver, and export path with synthetic data."""
-
-        reference_path = (
-            Path(__file__).resolve().parent.parent
-            / "tests"
-            / "sample_data"
-            / "synthetic_reference.dxf"
-        )
-        output_root.mkdir(parents=True, exist_ok=True)
-        source_path = output_root / "synthetic_source.png"
-        plane = np.zeros((301, 401, 3), dtype=np.uint8)
-        plane[:] = (238, 238, 238)
-        cv2.rectangle(plane, (0, 0), (400, 300), (20, 20, 20), 3)
-        cv2.line(plane, (0, 150), (400, 150), (40, 140, 220), 2)
-        cv2.line(plane, (200, 0), (200, 300), (40, 140, 220), 2)
-        cv2.putText(
-            plane,
-            "ImageRect",
-            (85, 165),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1.1,
-            (30, 30, 30),
-            2,
-            cv2.LINE_AA,
-        )
-
-        reference_points = np.array(
-            [[0.0, 0.0], [400.0, 0.0], [400.0, 300.0], [0.0, 300.0]],
-            dtype=np.float32,
-        )
-        image_points = np.array(
-            [[120.0, 420.0], [620.0, 360.0], [560.0, 90.0], [170.0, 120.0]],
-            dtype=np.float32,
-        )
-        canvas = np.zeros((520, 760, 3), dtype=np.uint8)
-        homography_ref_to_image = cv2.getPerspectiveTransform(reference_points, image_points)
-        cv2.warpPerspective(
-            plane,
-            homography_ref_to_image,
-            (760, 520),
-            dst=canvas,
-            borderMode=cv2.BORDER_TRANSPARENT,
-        )
-        if not cv2.imwrite(str(source_path), canvas):
-            raise ValueError(f"Unable to write smoke-test source image to {source_path}")
-
-        self.project = ProjectData(name="synthetic_smoke")
-        self.project_path = None
-        self.source_image_original = None
-        self.source_image = None
-        self.reference_2d = None
-        self.reference_3d = None
-        self.transform_result = None
-        self.selected_point_id = None
-        self.pending_plane_points = []
-        self.plane_pick_mode = False
-        self._reset_history()
-        self.load_image_file(source_path)
-        self.load_reference_file(reference_path)
-
-        for image_xy, reference_xy in zip(
-            image_points.tolist(), reference_points.tolist(), strict=True
-        ):
-            point = self.project.add_point()
-            point.image_xy = (float(image_xy[0]), float(image_xy[1]))
-            point.reference_xy = (float(reference_xy[0]), float(reference_xy[1]))
-
-        self._record_history()
-        self._recompute_transform()
-        if self.transform_result is None:
-            raise ValueError("Smoke test could not solve a homography.")
-
-        return export_rectified_image(
-            source_image=self.source_image,
-            homography_image_to_reference=self.transform_result.matrix,
-            control_points=self.project.paired_points(),
-            output_path=output_root / "synthetic_rectified",
-            pixel_size=1.0,
-            units=self.project.units,
-            output_format="png",
-            resampling="bilinear",
-            clip_to_hull=False,
-            reference_extents=self._current_reference_extents(),
-            project_name=self.project.name,
-            rms_error=self.project.rms_error,
-            warnings=self.project.warnings,
-        )
 
     def _build_ui(self) -> None:
         self.setWindowTitle("ImageRect — 2D-Arbeitsplatz")
@@ -1002,8 +908,9 @@ class MainWindow(QMainWindow):
 
     def _new_project(self) -> None:
         self.project = ProjectData()
-        self.project.sync_from_active_image()
         self.project_path = None
+        self._last_export_path = None
+        self._last_export_metadata_path = None
         self.reference_2d = None
         self.reference_3d = None
         self.source_image_original = None
@@ -1225,14 +1132,12 @@ class MainWindow(QMainWindow):
     def _update_project_name(self, name: str) -> None:
         self.project.name = name
         self.project.touch()
-        self._update_window_title()
+        self._refresh_ui()
 
     def _switch_active_image(self, index: int) -> None:
         if index < 0 or index == self.project.active_image_index:
             return
-        self.project.sync_to_active_image()
         self.project.active_image_index = index
-        self.project.sync_from_active_image()
         self.selected_point_id = None
         self._load_current_image_asset()
         self._recompute_transform()
@@ -1242,22 +1147,18 @@ class MainWindow(QMainWindow):
         locked_units = self._locked_reference_units()
         if locked_units is not None:
             self.project.units = locked_units
-            self._refresh_project_panel_context()
+            self._refresh_ui()
             return
         self.project.units = units
         self.project.touch()
-        if self.project.rms_error is None:
-            self.rms_label.setText("RMS: n/a")
-        else:
-            self.rms_label.setText(f"RMS: {self.project.rms_error:.3f} {self.project.units}")
-        self._refresh_project_panel_context()
+        self._refresh_ui()
 
     def _update_export_settings(self, settings: object) -> None:
         if not isinstance(settings, ExportSettings):
             return
         self.project.export_settings = settings
         self.project.touch()
-        self._refresh_project_panel_context()
+        self._refresh_ui()
 
     @staticmethod
     def _lens_profile_from_correction(
@@ -1275,16 +1176,6 @@ class MainWindow(QMainWindow):
         except (KeyError, TypeError, ValueError):
             return None
 
-    def _load_image_entry_source(self, entry: ImageEntry) -> np.ndarray:
-        image_path = self.project.resolve_image_entry_path(entry)
-        if image_path is None:
-            raise ValueError("Image entry has no source path.")
-        image = load_image(image_path)
-        profile = self._lens_profile_from_correction(entry.lens_correction)
-        if profile is None:
-            return image
-        return apply_lens_correction(image, profile)
-
     def _locked_reference_units(self) -> str | None:
         if self.reference_2d is not None and self.reference_2d.units != "unitless":
             return self.reference_2d.units
@@ -1292,105 +1183,7 @@ class MainWindow(QMainWindow):
             return self.reference_3d.units
         return None
 
-    def _entry_label(self, entry: ImageEntry, index: int) -> str:
-        image_path = self.project.resolve_image_entry_path(entry)
-        if image_path is not None:
-            return image_path.stem or f"Image {index + 1}"
-        return Path(entry.path).stem or f"Image {index + 1}"
-
-    def _entry_gps_pose(self, entry: ImageEntry) -> dict[str, object] | None:
-        if entry.gps_pose is not None:
-            return entry.gps_pose
-        image_path = self.project.resolve_image_entry_path(entry)
-        if image_path is None:
-            return None
-        entry.gps_pose = extract_gps_pose(image_path)
-        return entry.gps_pose
-
-    def _homography_for_entry(self, entry: ImageEntry) -> tuple[np.ndarray, list[str]]:
-        paired_points = [point for point in entry.points if point.is_enabled_pair]
-        if len(paired_points) < 4:
-            raise ValueError("at least four paired points are required")
-        if entry.transform_matrix is not None:
-            return np.asarray(entry.transform_matrix, dtype=np.float64), list(entry.warnings)
-
-        result = solve_planar_homography(
-            [point.image_xy for point in paired_points if point.image_xy is not None],
-            [point.reference_xy for point in paired_points if point.reference_xy is not None],
-        )
-        warnings = list(dict.fromkeys([*entry.warnings, *result.warnings]))
-        if warnings == list(entry.warnings):
-            warnings.append("Homography recomputed from stored control points")
-        return result.matrix, warnings
-
-    def _build_entry_camera_pose(
-        self,
-        entry: ImageEntry,
-        source_image: np.ndarray,
-        homography_image_to_reference: np.ndarray,
-    ) -> dict[str, object] | None:
-        profile = self._lens_profile_from_correction(entry.lens_correction)
-        if profile is None:
-            return None
-        return build_camera_pose(
-            homography_image_to_reference=homography_image_to_reference,
-            image_size=(source_image.shape[1], source_image.shape[0]),
-            profile=profile,
-            gps_pose=entry.gps_pose,
-            reference_crs_epsg=self.project.reference_crs_epsg,
-        )
-
-    def _collect_export_sources(self) -> tuple[list[MosaicSource], list[str]]:
-        self.project.ensure_image_entries()
-
-        sources: list[MosaicSource] = []
-        warnings: list[str] = []
-        for index, entry in enumerate(self.project.images):
-            if not entry.path:
-                continue
-            label = self._entry_label(entry, index)
-            paired_points = [point for point in entry.points if point.is_enabled_pair]
-            if len(paired_points) < 4:
-                warnings.append(f"Skipped {label}: needs at least four paired points")
-                continue
-            image_path = self.project.resolve_image_entry_path(entry)
-            if image_path is None:
-                continue
-            if not image_path.exists():
-                warnings.append(f"Skipped {label}: source image not found")
-                continue
-
-            gps_pose = (
-                entry.gps_pose if entry.gps_pose is not None else extract_gps_pose(image_path)
-            )
-            entry.gps_pose = gps_pose
-            source_image = self._load_image_entry_source(entry)
-            try:
-                homography, entry_warnings = self._homography_for_entry(entry)
-            except Exception as exc:
-                warnings.append(f"Skipped {label}: homography invalid ({exc})")
-                continue
-            sources.append(
-                MosaicSource(
-                    label=label,
-                    source_image=source_image,
-                    homography_image_to_reference=homography,
-                    control_points=paired_points,
-                    clip_polygon=entry.clip_polygon,
-                    gps_pose=gps_pose,
-                    camera_pose=self._build_entry_camera_pose(entry, source_image, homography),
-                    rms_error=entry.rms_error,
-                    warnings=tuple(entry_warnings),
-                )
-            )
-            warnings.extend(entry_warnings)
-
-        if not sources:
-            raise ValueError("At least one image with four valid point pairs is required.")
-        return sources, list(dict.fromkeys(warnings))
-
     def _total_project_point_count(self) -> int:
-        self.project.ensure_image_entries()
         return sum(len(entry.points) for entry in self.project.images)
 
     def _remap_active_image_geometry_for_lens_change(
@@ -1452,7 +1245,6 @@ class MainWindow(QMainWindow):
         else:
             self.project.active_image_index = existing_index
 
-        self.project.sync_from_active_image()
         self.project.image_path = str(normalized_image_path)
         if existing_index is None:
             self.project.lens_correction = None
@@ -1482,13 +1274,13 @@ class MainWindow(QMainWindow):
         if self.project.reference_crs_epsg is not None:
             transformed_markers: list[tuple[str, tuple[float, float]]] = []
             for index, image in enumerate(self.project.images):
-                gps_pose = self._entry_gps_pose(image)
+                gps_pose = ensure_entry_gps_pose(self.project, image)
                 if gps_pose is None:
                     continue
                 reference_xy = gps_to_reference_xy(gps_pose, self.project.reference_crs_epsg)
                 if reference_xy is None:
                     continue
-                label = self._entry_label(image, index)
+                label = image_label(self.project, image, index)
                 transformed_markers.append((label, reference_xy))
             if transformed_markers:
                 return transformed_markers
@@ -1497,14 +1289,14 @@ class MainWindow(QMainWindow):
             (
                 index
                 for index, image in enumerate(self.project.images)
-                if self._entry_gps_pose(image) is not None
+                if ensure_entry_gps_pose(self.project, image) is not None
             ),
             None,
         )
         if origin_index is None:
             return []
 
-        origin_pose = self._entry_gps_pose(self.project.images[origin_index])
+        origin_pose = ensure_entry_gps_pose(self.project, self.project.images[origin_index])
         if origin_pose is None:
             return []
 
@@ -1514,13 +1306,13 @@ class MainWindow(QMainWindow):
 
         markers: list[tuple[str, tuple[float, float]]] = []
         for index, image in enumerate(self.project.images):
-            gps_pose = self._entry_gps_pose(image)
+            gps_pose = ensure_entry_gps_pose(self.project, image)
             if gps_pose is None:
                 continue
             offset = gps_offset_meters(origin_pose, gps_pose)
             if offset is None:
                 continue
-            label = self._entry_label(image, index)
+            label = image_label(self.project, image, index)
             markers.append(
                 (
                     label,
@@ -1548,7 +1340,6 @@ class MainWindow(QMainWindow):
         self.transform_result = None
 
         if len(paired_points) < 4:
-            self.project.sync_to_active_image()
             return
 
         try:
@@ -1559,7 +1350,6 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             logger.warning("Homography recompute failed | error=%s", exc)
             self.project.warnings = [str(exc)]
-            self.project.sync_to_active_image()
             return
 
         self.transform_result = result
@@ -1574,10 +1364,8 @@ class MainWindow(QMainWindow):
         ):
             point.residual = residual
             point.residual_vector = residual_vector
-        self.project.sync_to_active_image()
 
     def _refresh_ui(self, status: str | None = None) -> None:
-        self.project.ensure_image_entries()
         self.image_viewer.set_image(self.source_image)
         self.reference_viewer.set_reference(self.reference_2d)
         self.reference_viewer.set_points(self.project.points, self.selected_point_id)
@@ -1637,7 +1425,6 @@ class MainWindow(QMainWindow):
         self.project_state_changed.emit()
 
     def _reload_assets_from_project(self) -> None:
-        self.project.sync_from_active_image()
         self.source_image = None
         self.source_image_original = None
         self.reference_2d = None
@@ -1744,7 +1531,6 @@ class MainWindow(QMainWindow):
         )
 
     def _export_action_state(self) -> tuple[bool, str]:
-        self.project.ensure_image_entries()
         if not any(entry.path for entry in self.project.images):
             return False, "Export requires at least one loaded image."
         if not self.project.reference_path:
@@ -1756,7 +1542,7 @@ class MainWindow(QMainWindow):
             if len(paired_points) < 4:
                 continue
             try:
-                self._homography_for_entry(entry)
+                homography_for_entry(entry)
             except Exception:
                 continue
             image_path = self.project.resolve_image_entry_path(entry)
@@ -1843,7 +1629,6 @@ class MainWindow(QMainWindow):
     def _record_history(self) -> None:
         if self._restoring_history:
             return
-        self.project.sync_to_active_image()
         snapshot = self.project.clone()
         self._history = self._history[: self._history_index + 1]
         self._history.append(snapshot)
@@ -1906,8 +1691,7 @@ class MainWindow(QMainWindow):
             return None
 
     def _confirm_export_preview(self) -> bool:
-        self.project.sync_to_active_image()
-        sources, preview_warnings = self._collect_export_sources()
+        sources, preview_warnings = collect_project_export_sources(self.project)
         total_point_count = self._total_project_point_count()
 
         if len(sources) > 1:
@@ -2006,6 +1790,11 @@ class MainWindow(QMainWindow):
         mins = reference_xy.min(axis=0)
         maxs = reference_xy.max(axis=0)
         return (float(mins[0]), float(mins[1])), (float(maxs[0]), float(maxs[1]))
+
+    def _reference_segments(self) -> list[tuple[Point2D, Point2D]] | None:
+        if self.reference_2d is not None:
+            return [(segment.start, segment.end) for segment in self.reference_2d.segments]
+        return project_reference_segments(self.project)
 
 
 def _coerce_polygon(raw: object) -> list[Point2D]:

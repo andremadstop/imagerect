@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, Qt, Signal
@@ -74,8 +74,12 @@ class Reference3DViewer(QWidget):
             else:
                 self._center = np.zeros(3, dtype=np.float64)
             if reference.vertices is not None and reference.faces is not None:
-                self._display_points = reference.vertices
-                self._display_edges = _mesh_edges(reference.faces, max_edges=25_000)
+                if len(reference.vertices) > 50_000:
+                    self._display_points = _sample_points(reference.vertices, max_points=50_000)
+                    self._display_edges = np.empty((0, 2), dtype=np.int32)
+                else:
+                    self._display_points = np.asarray(reference.vertices, dtype=np.float64)
+                    self._display_edges = _mesh_edges(reference.faces, max_edges=25_000)
                 self._center = reference.vertices.mean(axis=0)
             self._zoom = 1.0
             self._pan = QPointF(0.0, 0.0)
@@ -101,7 +105,7 @@ class Reference3DViewer(QWidget):
 
     def set_control_points(
         self,
-        control_points: dict[int, np.ndarray],
+        control_points: Mapping[int, np.ndarray | tuple[float, float, float]],
         selected_point_id: int | None = None,
     ) -> None:
         self._control_points = {
@@ -268,11 +272,20 @@ class Reference3DViewer(QWidget):
 
         painter.end()
 
-    def _project_points(self, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _project_points(
+        self,
+        points: np.ndarray,
+        scale_source: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
         rotation = _rotation_matrix(self._yaw, self._pitch)
         centered = points - self._center
         rotated = centered @ rotation.T
-        span = np.ptp(rotated[:, :2], axis=0)
+        scale_basis = self._display_points if scale_source is None else scale_source
+        if len(scale_basis) == 0:
+            scale_basis = points
+        basis_centered = np.asarray(scale_basis, dtype=np.float64) - self._center
+        basis_rotated = basis_centered @ rotation.T
+        span = np.ptp(basis_rotated[:, :2], axis=0)
         scale_base = max(float(np.max(span)), 1e-6)
         scale = min(self.width(), self.height()) * 0.42 / scale_base * self._zoom
         self._projection_scale = scale

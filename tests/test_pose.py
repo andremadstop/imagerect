@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from core import pose
 from core.lens import LensProfile
 from core.pose import decompose_homography_pose, gps_to_reference_transform
 
@@ -38,3 +39,32 @@ def test_gps_to_reference_transform() -> None:
 
     assert calls == [25833]
     assert xy == pytest.approx((13400.0, 52500.0))
+
+
+def test_homography_decomposition_prefers_positive_depth_solution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = LensProfile(name="pose", focal_length_mm=24.0, sensor_width_mm=36.0)
+
+    def fake_decompose(
+        _homography: np.ndarray, _camera_matrix: np.ndarray
+    ) -> tuple[int, list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
+        return (
+            2,
+            [np.eye(3, dtype=np.float64), np.eye(3, dtype=np.float64)],
+            [
+                np.array([[-1.0], [0.0], [-5.0]], dtype=np.float64),
+                np.array([[2.0], [0.0], [10.0]], dtype=np.float64),
+            ],
+            [
+                np.array([[0.0], [0.0], [-1.0]], dtype=np.float64),
+                np.array([[0.0], [0.0], [1.0]], dtype=np.float64),
+            ],
+        )
+
+    monkeypatch.setattr(pose.cv2, "decomposeHomographyMat", fake_decompose)
+
+    result = decompose_homography_pose(np.eye(3, dtype=np.float64), (4000, 3000), profile)
+
+    assert result is not None
+    assert result["position_3d"] == pytest.approx([2.0, 0.0, 10.0])

@@ -277,7 +277,7 @@ def _preview_pixel_size(
 
 
 def _format_summary(settings: ExportSettings) -> str:
-    layers = "3 layers" if settings.multi_layer else "1 layer"
+    layers = "multi-layer" if settings.multi_layer else "1 layer"
     details = [settings.compression.upper(), f"{settings.bit_depth}-bit", layers]
     return f"{settings.output_format.upper()} ({', '.join(details)})"
 

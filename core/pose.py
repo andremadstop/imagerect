@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,7 @@ from core.lens import LensProfile, build_camera_matrix
 
 Point2D = tuple[float, float]
 TransformerFactory = Callable[[int], Any]
+METERS_PER_DEG_LAT = 111_320.0
 
 
 def extract_gps_pose(image_path: str | Path) -> dict[str, Any] | None:
@@ -78,8 +79,8 @@ def gps_offset_meters(origin_pose: dict[str, Any], target_pose: dict[str, Any]) 
     assert lat0 is not None and lon0 is not None and lat1 is not None and lon1 is not None
 
     mean_lat_rad = np.deg2rad((lat0 + lat1) * 0.5)
-    meters_per_deg_lat = 111_320.0
-    meters_per_deg_lon = 111_320.0 * float(np.cos(mean_lat_rad))
+    meters_per_deg_lat = METERS_PER_DEG_LAT
+    meters_per_deg_lon = METERS_PER_DEG_LAT * float(np.cos(mean_lat_rad))
     dx = (lon1 - lon0) * meters_per_deg_lon
     dy = (lat1 - lat0) * meters_per_deg_lat
     return (float(dx), float(dy))
@@ -90,7 +91,12 @@ def decompose_homography_pose(
     image_size: tuple[int, int],
     profile: LensProfile,
 ) -> dict[str, Any] | None:
-    """Approximate camera pose from a homography and known intrinsics."""
+    """
+    Approximate camera pose from a homography and known intrinsics.
+
+    Uses OpenCV decomposeHomographyMat to extract possible rotation and translation
+    solutions, then selects the most plausible one based on geometric heuristics.
+    """
 
     width, height = image_size
     camera_matrix = build_camera_matrix(
@@ -100,17 +106,21 @@ def decompose_homography_pose(
         height,
     )
     try:
-        solution_count, rotations, translations, _normals = cv2.decomposeHomographyMat(
+        # cv2.decomposeHomographyMat returns (count, rotations, translations, normals)
+        # where rotations, translations, normals are sequences of arrays.
+        res = cv2.decomposeHomographyMat(
             np.linalg.inv(homography_image_to_reference),
             camera_matrix,
         )
+        if res is None or res[0] <= 0:
+            return None
+        _count, rotations, translations, normals = res
     except Exception:
         return None
-    if solution_count <= 0:
-        return None
 
-    rotation = rotations[0]
-    translation = translations[0].reshape(-1)
+    rotation, translation = _select_pose_solution(
+        list(rotations), list(translations), list(normals)
+    )
     yaw, pitch, roll = _rotation_matrix_to_euler(rotation)
     fov = 2.0 * np.degrees(np.arctan(profile.sensor_width_mm / (2.0 * profile.focal_length_mm)))
     return {
@@ -253,6 +263,48 @@ def _rotation_matrix_to_euler(rotation: np.ndarray) -> tuple[float, float, float
         y = float(np.arctan2(-rotation[2, 0], sy))
         z = 0.0
     return (np.degrees(z), np.degrees(y), np.degrees(x))
+
+
+def _select_pose_solution(
+    rotations: Sequence[np.ndarray],
+    translations: Sequence[np.ndarray],
+    normals: Sequence[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    best_index = 0
+    best_score = float("-inf")
+    for index, (rotation, translation, normal) in enumerate(
+        zip(rotations, translations, normals, strict=False)
+    ):
+        translation_vec = np.asarray(translation, dtype=np.float64).reshape(-1)
+        normal_vec = np.asarray(normal, dtype=np.float64).reshape(-1)
+        _yaw, pitch, roll = _rotation_matrix_to_euler(rotation)
+        score = 0.0
+        if np.isfinite(rotation).all() and np.isfinite(translation_vec).all():
+            score += 100.0
+        if len(translation_vec) >= 3 and translation_vec[2] > 0.0:
+            score += 50.0
+        if len(normal_vec) >= 3 and normal_vec[2] > 0.0:
+            score += 20.0
+        if (
+            len(translation_vec) >= 3
+            and len(normal_vec) >= 3
+            and float(np.dot(translation_vec[:3], normal_vec[:3])) > 0.0
+        ):
+            score += 10.0
+        score -= abs(float(pitch)) * 0.1
+        score -= abs(float(roll)) * 0.1
+        if score > best_score:
+            best_score = score
+            best_index = index
+    return rotations[best_index], np.asarray(translations[best_index], dtype=np.float64).reshape(-1)
+
+
+def crs_transform_available() -> bool:
+    try:
+        from pyproj import Transformer
+    except ImportError:
+        return False
+    return Transformer is not None
 
 
 def _transformer_for_epsg(

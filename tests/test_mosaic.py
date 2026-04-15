@@ -53,6 +53,29 @@ def test_mosaic_feather_blend_at_seam() -> None:
     assert tuple(rendered.image[50, 180]) == (0, 255, 0)
 
 
+def test_mosaic_black_pixels_remain_valid_during_feather_blend() -> None:
+    left = _mosaic_source(
+        color=(0, 0, 0),
+        reference_points=[(0.0, 0.0), (119.0, 0.0), (119.0, 99.0), (0.0, 99.0)],
+    )
+    right = _mosaic_source(
+        color=(0, 255, 0),
+        reference_points=[(80.0, 0.0), (199.0, 0.0), (199.0, 99.0), (80.0, 99.0)],
+    )
+
+    rendered = render_mosaic_image(
+        sources=[left, right],
+        pixel_size=1.0,
+        units="mm",
+        blend_radius_px=24,
+    )
+
+    seam_pixel = rendered.image[50, 100]
+    assert seam_pixel[1] > 0
+    assert seam_pixel[1] < 255
+    assert tuple(rendered.image[50, 20]) == (0, 0, 0)
+
+
 def _mosaic_source(
     color: tuple[int, int, int],
     reference_points: list[tuple[float, float]],

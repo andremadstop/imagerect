@@ -92,3 +92,16 @@ def test_recent_projects_are_listed_in_project_hub(qtbot: Any, tmp_path: Path) -
 
     assert controller.project_hub.recent_projects.count() == 2
     assert controller.project_hub.recent_projects.item(0).toolTip() == str(first)
+
+
+def test_workspace_summary_updates_after_project_name_change(qtbot: Any) -> None:
+    controller = WorkspaceController()
+    qtbot.addWidget(controller.project_hub)
+    qtbot.addWidget(controller.rectify_window)
+    qtbot.addWidget(controller.three_d_window)
+    qtbot.addWidget(controller.review_window)
+
+    controller.rectify_window._update_project_name("Renamed")
+
+    assert controller.project_hub.project_name_label.text() == "Renamed"
+    assert controller.review_window.project_label.text() == "Renamed"

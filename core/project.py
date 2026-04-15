@@ -23,17 +23,21 @@ logger = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
+    """Return the current time in ISO 8601 format."""
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 def _coerce_point(raw: Any) -> Point2D | None:
     if raw is None:
         return None
-    return (float(raw[0]), float(raw[1]))
+    try:
+        return (float(raw[0]), float(raw[1]))
+    except (IndexError, TypeError, ValueError):
+        return None
 
 
 def _coerce_point_list(raw: Any) -> list[Point2D] | None:
-    if raw is None:
+    if not isinstance(raw, list):
         return None
     points: list[Point2D] = []
     for value in raw:
@@ -46,19 +50,25 @@ def _coerce_point_list(raw: Any) -> list[Point2D] | None:
 def _coerce_reference_roi(raw: Any) -> ReferenceRoi | None:
     if raw is None:
         return None
-    values = [float(value) for value in raw]
-    if len(values) != 4:
-        raise ValueError("reference_roi must contain exactly four values")
-    return (values[0], values[1], values[2], values[3])
+    try:
+        values = [float(value) for value in raw]
+        if len(values) != 4:
+            return None
+        return (values[0], values[1], values[2], values[3])
+    except (TypeError, ValueError):
+        return None
 
 
 def _coerce_point3d(raw: Any) -> Point3D | None:
     if raw is None:
         return None
-    values = [float(value) for value in raw]
-    if len(values) != 3:
-        raise ValueError("reference_world_point must contain exactly three values")
-    return (values[0], values[1], values[2])
+    try:
+        values = [float(value) for value in raw]
+        if len(values) != 3:
+            return None
+        return (values[0], values[1], values[2])
+    except (TypeError, ValueError):
+        return None
 
 
 def _coerce_reference_world_points(raw: Any) -> dict[int, Point3D]:
@@ -73,25 +83,13 @@ def _coerce_reference_world_points(raw: Any) -> dict[int, Point3D]:
 
 
 def unit_to_mm(units: str) -> float:
+    """Return the conversion factor from the given unit to millimeters."""
     return UNIT_TO_MM.get(units, 1.0)
-
-
-def _copy_control_point(point: ControlPoint) -> ControlPoint:
-    return ControlPoint(
-        id=point.id,
-        label=point.label,
-        image_xy=point.image_xy,
-        reference_xy=point.reference_xy,
-        enabled=point.enabled,
-        locked=point.locked,
-        residual=point.residual,
-        residual_vector=point.residual_vector,
-    )
 
 
 @dataclass(slots=True)
 class ControlPoint:
-    """A single control point pair row."""
+    """A single control point pair linking image coordinates to reference coordinates."""
 
     id: int
     label: str = ""
@@ -104,15 +102,32 @@ class ControlPoint:
 
     @property
     def is_paired(self) -> bool:
+        """Return True if both image and reference coordinates are set."""
         return self.image_xy is not None and self.reference_xy is not None
 
     @property
     def is_enabled_pair(self) -> bool:
+        """Return True if the point is enabled and has both coordinates set."""
         return self.enabled and self.is_paired
+
+    def clone(self) -> ControlPoint:
+        """Return a deep copy of this control point."""
+        return ControlPoint(
+            id=self.id,
+            label=self.label,
+            image_xy=self.image_xy,
+            reference_xy=self.reference_xy,
+            enabled=self.enabled,
+            locked=self.locked,
+            residual=self.residual,
+            residual_vector=self.residual_vector,
+        )
 
 
 @dataclass(slots=True)
 class ExportSettings:
+    """Settings for the rectification export process."""
+
     pixel_size: float = 1.0
     scale_denominator: float = 11.811023622047244
     dpi: float = 300.0
@@ -131,6 +146,8 @@ class ExportSettings:
 
 @dataclass(slots=True)
 class ImageEntry:
+    """Represents a single image and its specific rectification data."""
+
     path: str = ""
     lens_correction: dict[str, Any] | None = None
     clip_polygon: list[Point2D] | None = None
@@ -141,403 +158,420 @@ class ImageEntry:
     transform_matrix: list[list[float]] | None = None
     warnings: list[str] = field(default_factory=list)
 
+    def clone(self) -> ImageEntry:
+        """Return a deep copy of this image entry."""
+        return ImageEntry(
+            path=self.path,
+            lens_correction=(
+                dict(self.lens_correction) if self.lens_correction is not None else None
+            ),
+            clip_polygon=(list(self.clip_polygon) if self.clip_polygon is not None else None),
+            points=[p.clone() for p in self.points],
+            reference_world_points=dict(self.reference_world_points),
+            gps_pose=dict(self.gps_pose) if self.gps_pose is not None else None,
+            rms_error=self.rms_error,
+            transform_matrix=(
+                [list(row) for row in self.transform_matrix]
+                if self.transform_matrix is not None
+                else None
+            ),
+            warnings=list(self.warnings),
+        )
+
 
 @dataclass(slots=True)
 class ProjectData:
-    """Top-level project data for save/load and undo snapshots."""
+    """
+    Top-level project data for save/load and undo snapshots.
+    This class acts as the central data model. Image-specific data is stored in 'images'.
+    The 'active_image_index' determines which entry is currently being edited.
+    """
 
     name: str = "Untitled"
-    image_path: str = ""
     images: list[ImageEntry] = field(default_factory=list)
     active_image_index: int = 0
     reference_path: str = ""
     reference_type: str = "dxf"
     reference_crs_epsg: int | None = None
-    points: list[ControlPoint] = field(default_factory=list)
     export_settings: ExportSettings = field(default_factory=ExportSettings)
     units: str = "mm"
     working_plane: dict[str, Any] | None = None
-    lens_correction: dict[str, Any] | None = None
-    clip_polygon: list[Point2D] | None = None
-    reference_world_points: dict[int, Point3D] = field(default_factory=dict)
     reference_roi: ReferenceRoi | None = None
-    rms_error: float | None = None
-    transform_matrix: list[list[float]] | None = None
-    warnings: list[str] = field(default_factory=list)
     created: str = field(default_factory=_now_iso)
     modified: str = field(default_factory=_now_iso)
     _next_id: int = field(default=1, repr=False)
     _project_file: str | None = field(default=None, repr=False, compare=False)
 
+    @property
+    def active_image(self) -> ImageEntry | None:
+        """Return the currently active image entry."""
+        if not self.images:
+            return None
+        idx = max(0, min(self.active_image_index, len(self.images) - 1))
+        return self.images[idx]
+
+    def _ensure_active(self) -> ImageEntry:
+        if not self.images:
+            self.add_image("")
+        active = self.active_image
+        assert active is not None
+        return active
+
+    # Forwarding properties for backward compatibility
+    @property
+    def points(self) -> list[ControlPoint]:
+        return self.active_image.points if self.active_image else []
+
+    @points.setter
+    def points(self, value: list[ControlPoint]) -> None:
+        self._ensure_active().points = value
+
+    @property
+    def image_path(self) -> str:
+        return self.active_image.path if self.active_image else ""
+
+    @image_path.setter
+    def image_path(self, value: str) -> None:
+        self._ensure_active().path = value
+
+    @property
+    def lens_correction(self) -> dict[str, Any] | None:
+        return self.active_image.lens_correction if self.active_image else None
+
+    @lens_correction.setter
+    def lens_correction(self, value: dict[str, Any] | None) -> None:
+        self._ensure_active().lens_correction = value
+
+    @property
+    def clip_polygon(self) -> list[Point2D] | None:
+        return self.active_image.clip_polygon if self.active_image else None
+
+    @clip_polygon.setter
+    def clip_polygon(self, value: list[Point2D] | None) -> None:
+        self._ensure_active().clip_polygon = value
+
+    @property
+    def reference_world_points(self) -> dict[int, Point3D]:
+        return self.active_image.reference_world_points if self.active_image else {}
+
+    @reference_world_points.setter
+    def reference_world_points(self, value: dict[int, Point3D]) -> None:
+        self._ensure_active().reference_world_points = value
+
+    @property
+    def rms_error(self) -> float | None:
+        return self.active_image.rms_error if self.active_image else None
+
+    @rms_error.setter
+    def rms_error(self, value: float | None) -> None:
+        self._ensure_active().rms_error = value
+
+    @property
+    def transform_matrix(self) -> list[list[float]] | None:
+        return self.active_image.transform_matrix if self.active_image else None
+
+    @transform_matrix.setter
+    def transform_matrix(self, value: list[list[float]] | None) -> None:
+        self._ensure_active().transform_matrix = value
+
+    @property
+    def warnings(self) -> list[str]:
+        return self.active_image.warnings if self.active_image else []
+
+    @warnings.setter
+    def warnings(self, value: list[str]) -> None:
+        self._ensure_active().warnings = value
+
     def touch(self) -> None:
+        """Update the modification timestamp."""
         self.modified = _now_iso()
 
     def clear_solver_state(self) -> None:
-        self.rms_error = None
-        self.transform_matrix = None
-        self.warnings = []
-        for point in self.points:
-            point.residual = None
-            point.residual_vector = None
-        self.sync_to_active_image()
-
-    def clear_reference_alignment(self) -> None:
-        self.ensure_image_entries()
-        if self.images:
-            for entry in self.images:
-                entry.reference_world_points = {}
-                entry.rms_error = None
-                entry.transform_matrix = None
-                entry.warnings = []
-                for point in entry.points:
-                    point.reference_xy = None
-                    point.residual = None
-                    point.residual_vector = None
-            self.sync_from_active_image()
-        else:
-            self.reference_world_points = {}
-            self.clear_solver_state()
-            for point in self.points:
-                point.reference_xy = None
+        """Reset residual values and transform matrices for all images."""
+        for entry in self.images:
+            entry.rms_error = None
+            entry.transform_matrix = None
+            entry.warnings = []
+            for point in entry.points:
+                point.residual = None
+                point.residual_vector = None
         self.touch()
 
-    def next_label(self) -> str:
-        return f"P{self._next_id:02d}"
+    def clear_reference_alignment(self) -> None:
+        """Clear all reference coordinates and solver state for all images."""
+        for entry in self.images:
+            entry.reference_world_points = {}
+            entry.rms_error = None
+            entry.transform_matrix = None
+            entry.warnings = []
+            for point in entry.points:
+                point.reference_xy = None
+                point.residual = None
+                point.residual_vector = None
+        self.touch()
+
+    def add_image(self, path: str | Path) -> ImageEntry:
+        """Add a new image entry to the project, or return existing if path matches."""
+        p_str = str(path)
+        for entry in self.images:
+            if entry.path == p_str:
+                self.active_image_index = self.images.index(entry)
+                return entry
+        entry = ImageEntry(path=p_str)
+        self.images.append(entry)
+        self.active_image_index = len(self.images) - 1
+        self.touch()
+        return entry
 
     def add_point(self, label: str | None = None) -> ControlPoint:
-        point = ControlPoint(id=self._next_id, label=label or self.next_label())
+        """Add a new control point to the active image."""
+        active = self._ensure_active()
+        point_id = self._next_id
         self._next_id += 1
-        self.points.append(point)
+        label = label or f"P{point_id:02d}"
+        point = ControlPoint(id=point_id, label=label)
+        active.points.append(point)
         self.touch()
         return point
 
     def get_point(self, point_id: int) -> ControlPoint | None:
-        return next((point for point in self.points if point.id == point_id), None)
+        """Get a control point by ID from the active image."""
+        if not self.active_image:
+            return None
+        return next((p for p in self.active_image.points if p.id == point_id), None)
 
     def remove_point(self, point_id: int) -> None:
-        self.points = [point for point in self.points if point.id != point_id]
-        self.reference_world_points.pop(point_id, None)
-        self.touch()
-
-    def move_point(self, point_id: int, offset: int) -> None:
-        index = next(
-            (idx for idx, point in enumerate(self.points) if point.id == point_id),
-            None,
-        )
-        if index is None:
-            return
-        new_index = max(0, min(len(self.points) - 1, index + offset))
-        if new_index == index:
-            return
-        point = self.points.pop(index)
-        self.points.insert(new_index, point)
-        self.touch()
+        """Remove a point by ID from the active image."""
+        active = self.active_image
+        if active:
+            active.points = [p for p in active.points if p.id != point_id]
+            active.reference_world_points.pop(point_id, None)
+            self.touch()
 
     def paired_points(self) -> list[ControlPoint]:
+        """Return all enabled point pairs for the active image."""
         return [point for point in self.points if point.is_enabled_pair]
 
-    @property
-    def project_file(self) -> Path | None:
-        if self._project_file is None:
-            return None
-        return Path(self._project_file)
-
-    @property
-    def project_dir(self) -> Path | None:
-        project_file = self.project_file
-        if project_file is None:
-            return None
-        return project_file.parent
-
-    def set_project_file(self, path: Path | None) -> None:
-        self._project_file = str(path.resolve()) if path is not None else None
-
-    def validate_asset_paths(self, project_file: Path) -> None:
-        self.set_project_file(project_file)
-        for field_name, raw_path in [
-            ("image_path", self.image_path),
-            ("reference_path", self.reference_path),
-            *[(f"images[{index}].path", entry.path) for index, entry in enumerate(self.images)],
-        ]:
-            _validate_project_asset_path(raw_path, project_file, field_name)
-
-    def resolve_asset_path(self, raw_path: str) -> Path:
-        return _resolve_project_asset_path(raw_path, self.project_file)
-
-    def resolve_active_image_path(self) -> Path | None:
-        if not self.image_path:
-            return None
-        return self.resolve_asset_path(self.image_path)
-
-    def resolve_reference_path(self) -> Path | None:
-        if not self.reference_path:
-            return None
-        return self.resolve_asset_path(self.reference_path)
-
-    def resolve_image_entry_path(self, entry: ImageEntry) -> Path | None:
-        if not entry.path:
-            return None
-        return self.resolve_asset_path(entry.path)
-
     def clone(self) -> ProjectData:
-        self.sync_to_active_image()
-        clone = self.from_dict(self.to_dict())
+        """Return a deep copy of the entire project."""
+        payload = self.to_dict()
+        clone = self.from_dict(payload)
         clone._project_file = self._project_file
         return clone
 
-    def ensure_image_entries(self) -> None:
-        if self.images:
-            self.active_image_index = max(0, min(self.active_image_index, len(self.images) - 1))
-            return
-        if (
-            self.image_path
-            or self.points
-            or self.lens_correction is not None
-            or self.clip_polygon is not None
-        ):
-            self.images = [
-                ImageEntry(
-                    path=self.image_path,
-                    lens_correction=self.lens_correction,
-                    clip_polygon=list(self.clip_polygon) if self.clip_polygon is not None else None,
-                    points=[_copy_control_point(point) for point in self.points],
-                    reference_world_points=dict(self.reference_world_points),
-                    rms_error=self.rms_error,
-                    transform_matrix=self.transform_matrix,
-                    warnings=list(self.warnings),
-                )
-            ]
-            self.active_image_index = 0
-
-    def sync_to_active_image(self) -> None:
-        self.ensure_image_entries()
-        if not self.images:
-            return
-        entry = self.images[self.active_image_index]
-        entry.path = self.image_path
-        entry.lens_correction = self.lens_correction
-        entry.clip_polygon = list(self.clip_polygon) if self.clip_polygon is not None else None
-        entry.points = [_copy_control_point(point) for point in self.points]
-        entry.reference_world_points = dict(self.reference_world_points)
-        entry.rms_error = self.rms_error
-        entry.transform_matrix = self.transform_matrix
-        entry.warnings = list(self.warnings)
-
-    def sync_from_active_image(self) -> None:
-        self.ensure_image_entries()
-        if not self.images:
-            return
-        self.active_image_index = max(0, min(self.active_image_index, len(self.images) - 1))
-        entry = self.images[self.active_image_index]
-        self.image_path = entry.path
-        self.lens_correction = entry.lens_correction
-        self.clip_polygon = list(entry.clip_polygon) if entry.clip_polygon is not None else None
-        self.points = [_copy_control_point(point) for point in entry.points]
-        self.reference_world_points = dict(entry.reference_world_points)
-        self.rms_error = entry.rms_error
-        self.transform_matrix = entry.transform_matrix
-        self.warnings = list(entry.warnings)
-
     def to_dict(self) -> dict[str, Any]:
-        self.sync_to_active_image()
-        payload = asdict(self)
-        payload["_next_id"] = self._next_id
-        payload.pop("_project_file", None)
+        """Serialize the project to a dictionary, omitting forwarded properties."""
+        payload = {
+            "name": self.name,
+            "images": [self._image_to_dict(img) for img in self.images],
+            "active_image_index": self.active_image_index,
+            "reference_path": self.reference_path,
+            "reference_type": self.reference_type,
+            "reference_crs_epsg": self.reference_crs_epsg,
+            "export_settings": asdict(self.export_settings),
+            "units": self.units,
+            "working_plane": self.working_plane,
+            "reference_roi": self.reference_roi,
+            "created": self.created,
+            "modified": self.modified,
+            "_next_id": self._next_id,
+        }
         return payload
+
+    def _image_to_dict(self, img: ImageEntry) -> dict[str, Any]:
+        return {
+            "path": img.path,
+            "lens_correction": img.lens_correction,
+            "clip_polygon": img.clip_polygon,
+            "points": [asdict(p) for p in img.points],
+            "reference_world_points": {str(k): v for k, v in img.reference_world_points.items()},
+            "gps_pose": img.gps_pose,
+            "rms_error": img.rms_error,
+            "transform_matrix": img.transform_matrix,
+            "warnings": img.warnings,
+        }
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> ProjectData:
-        points: list[ControlPoint] = []
-        for raw_point in payload.get("points", []):
-            points.append(
+        """Deserialize the project from a dictionary."""
+        images: list[ImageEntry] = []
+        for raw_img in payload.get("images", []):
+            points = [
                 ControlPoint(
-                    id=int(raw_point["id"]),
-                    label=str(raw_point.get("label", "")),
-                    image_xy=_coerce_point(raw_point.get("image_xy")),
-                    reference_xy=_coerce_point(raw_point.get("reference_xy")),
-                    enabled=bool(raw_point.get("enabled", True)),
-                    locked=bool(raw_point.get("locked", False)),
-                    residual=(
-                        float(raw_point["residual"])
-                        if raw_point.get("residual") is not None
-                        else None
+                    id=int(p["id"]),
+                    label=str(p.get("label", "")),
+                    image_xy=_coerce_point(p.get("image_xy")),
+                    reference_xy=_coerce_point(p.get("reference_xy")),
+                    enabled=bool(p.get("enabled", True)),
+                    locked=bool(p.get("locked", False)),
+                    residual=_to_float(p.get("residual")),
+                    residual_vector=_coerce_point(p.get("residual_vector")),
+                )
+                for p in raw_img.get("points", [])
+            ]
+            images.append(
+                ImageEntry(
+                    path=str(raw_img.get("path", "")),
+                    lens_correction=raw_img.get("lens_correction"),
+                    clip_polygon=_coerce_point_list(raw_img.get("clip_polygon")),
+                    points=points,
+                    reference_world_points=_coerce_reference_world_points(
+                        raw_img.get("reference_world_points")
                     ),
-                    residual_vector=_coerce_point(raw_point.get("residual_vector")),
+                    gps_pose=raw_img.get("gps_pose"),
+                    rms_error=_to_float(raw_img.get("rms_error")),
+                    transform_matrix=raw_img.get("transform_matrix"),
+                    warnings=[str(w) for w in raw_img.get("warnings", [])],
                 )
             )
 
-        images: list[ImageEntry] = []
-        for raw_image in payload.get("images", []):
-            image_points: list[ControlPoint] = []
-            for raw_point in raw_image.get("points", []):
-                image_points.append(
-                    ControlPoint(
-                        id=int(raw_point["id"]),
-                        label=str(raw_point.get("label", "")),
-                        image_xy=_coerce_point(raw_point.get("image_xy")),
-                        reference_xy=_coerce_point(raw_point.get("reference_xy")),
-                        enabled=bool(raw_point.get("enabled", True)),
-                        locked=bool(raw_point.get("locked", False)),
-                        residual=(
-                            float(raw_point["residual"])
-                            if raw_point.get("residual") is not None
-                            else None
-                        ),
-                        residual_vector=_coerce_point(raw_point.get("residual_vector")),
-                    )
+        if not images and (payload.get("points") or payload.get("image_path")):
+            legacy_points = [
+                ControlPoint(
+                    id=int(p["id"]),
+                    label=str(p.get("label", "")),
+                    image_xy=_coerce_point(p.get("image_xy")),
+                    reference_xy=_coerce_point(p.get("reference_xy")),
+                    enabled=bool(p.get("enabled", True)),
+                    locked=bool(p.get("locked", False)),
+                    residual=_to_float(p.get("residual")),
+                    residual_vector=_coerce_point(p.get("residual_vector")),
                 )
+                for p in payload.get("points", [])
+            ]
             images.append(
                 ImageEntry(
-                    path=str(raw_image.get("path", "")),
-                    lens_correction=raw_image.get("lens_correction"),
-                    clip_polygon=_coerce_point_list(raw_image.get("clip_polygon")),
-                    points=image_points,
+                    path=str(payload.get("image_path", "")),
+                    lens_correction=payload.get("lens_correction"),
+                    clip_polygon=_coerce_point_list(payload.get("clip_polygon")),
+                    points=legacy_points,
                     reference_world_points=_coerce_reference_world_points(
-                        raw_image.get("reference_world_points")
+                        payload.get("reference_world_points")
                     ),
-                    gps_pose=raw_image.get("gps_pose"),
-                    rms_error=(
-                        float(raw_image["rms_error"])
-                        if raw_image.get("rms_error") is not None
-                        else None
-                    ),
-                    transform_matrix=raw_image.get("transform_matrix"),
-                    warnings=[str(value) for value in raw_image.get("warnings", [])],
+                    gps_pose=payload.get("gps_pose"),
+                    rms_error=_to_float(payload.get("rms_error")),
+                    transform_matrix=payload.get("transform_matrix"),
+                    warnings=[str(w) for w in payload.get("warnings", [])],
                 )
             )
 
         export_settings = ExportSettings(**payload.get("export_settings", {}))
         project = cls(
             name=str(payload.get("name", "Untitled")),
-            image_path=str(payload.get("image_path", "")),
             images=images,
             active_image_index=int(payload.get("active_image_index", 0)),
             reference_path=str(payload.get("reference_path", "")),
             reference_type=str(payload.get("reference_type", "dxf")),
-            reference_crs_epsg=(
-                int(payload["reference_crs_epsg"])
-                if payload.get("reference_crs_epsg") is not None
-                else None
-            ),
-            points=points,
+            reference_crs_epsg=payload.get("reference_crs_epsg"),
             export_settings=export_settings,
             units=str(payload.get("units", "mm")),
             working_plane=payload.get("working_plane"),
-            lens_correction=payload.get("lens_correction"),
-            clip_polygon=_coerce_point_list(payload.get("clip_polygon")),
-            reference_world_points=_coerce_reference_world_points(
-                payload.get("reference_world_points")
-            ),
             reference_roi=_coerce_reference_roi(payload.get("reference_roi")),
-            rms_error=(
-                float(payload["rms_error"]) if payload.get("rms_error") is not None else None
-            ),
-            transform_matrix=payload.get("transform_matrix"),
-            warnings=[str(value) for value in payload.get("warnings", [])],
             created=str(payload.get("created", _now_iso())),
             modified=str(payload.get("modified", _now_iso())),
         )
-        if project.images:
-            project.sync_from_active_image()
-        else:
-            project.ensure_image_entries()
-        max_point_id = max(
-            (
-                point.id
-                for point in [*points, *(point for image in images for point in image.points)]
-            ),
-            default=0,
-        )
-        project._next_id = int(payload.get("_next_id", max_point_id + 1))
+        max_id = 0
+        for img in images:
+            for p in img.points:
+                max_id = max(max_id, p.id)
+        project._next_id = int(payload.get("_next_id", max_id + 1))
         return project
 
     def save(self, path: Path) -> None:
+        """Save the project to a JSON file, relativizing asset paths."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.sync_to_active_image()
         self.touch()
         payload = self.to_dict()
-        _relativize_project_asset_paths(payload, self, path)
-        path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        self.set_project_file(path)
+        target_dir = path.parent.resolve()
+
+        def _rel_path(raw: str) -> str:
+            if not raw:
+                return raw
+            resolved = self.resolve_asset_path(raw)
+            try:
+                return resolved.relative_to(target_dir).as_posix()
+            except ValueError:
+                return str(resolved)
+
+        payload["reference_path"] = _rel_path(self.reference_path)
+        for img in payload.get("images", []):
+            img["path"] = _rel_path(img["path"])
+
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        self._project_file = str(path.resolve())
+
+    def validate_asset_paths(self, project_file: Path) -> None:
+        """Validate that all asset paths are within the project directory or absolute."""
+        self._project_file = str(project_file.resolve())
+        project_dir = project_file.parent.resolve()
+
+        def _check(raw: str, field_name: str) -> None:
+            if not raw:
+                return
+            candidate = Path(raw)
+            if candidate.is_absolute():
+                return
+            resolved_target = (project_dir / candidate).resolve()
+            if not resolved_target.is_relative_to(project_dir):
+                raise ValueError(
+                    f"Projektpfad verlässt das Projektverzeichnis ({field_name}): {raw}"
+                )
+
+        _check(self.reference_path, "reference_path")
+        for i, img in enumerate(self.images):
+            _check(img.path, f"images[{i}].path")
 
     @classmethod
     def load(cls, path: Path) -> ProjectData:
-        project = cls.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        """Load a project from a JSON file and validate asset paths."""
+        data = json.loads(path.read_text(encoding="utf-8"))
+        project = cls.from_dict(data)
         project.validate_asset_paths(path)
         return project
 
+    def resolve_asset_path(self, raw_path: str) -> Path:
+        """Resolve a project asset path relative to the project file."""
+        p = Path(raw_path)
+        if p.is_absolute() or not self._project_file:
+            return p
+        return (Path(self._project_file).parent / p).resolve()
 
-def _resolve_project_asset_path(raw_path: str, project_file: Path | None) -> Path:
-    candidate = Path(raw_path)
-    if candidate.is_absolute() or project_file is None:
-        return candidate
-    return (project_file.parent / candidate).resolve()
+    def resolve_image_entry_path(self, entry: ImageEntry) -> Path | None:
+        """Resolve the path of a specific image entry."""
+        if not entry.path:
+            return None
+        return self.resolve_asset_path(entry.path)
 
+    def resolve_active_image_path(self) -> Path | None:
+        """Resolve the path of the currently active image."""
+        if not self.active_image:
+            return None
+        return self.resolve_image_entry_path(self.active_image)
 
-def _validate_project_asset_path(raw_path: str, project_file: Path, field_name: str) -> None:
-    if not raw_path:
-        return
+    def resolve_reference_path(self) -> Path | None:
+        """Resolve the path of the reference file."""
+        if not self.reference_path:
+            return None
+        return self.resolve_asset_path(self.reference_path)
 
-    candidate = Path(raw_path)
-    if candidate.is_absolute():
-        logger.warning(
-            "Absolute path retained in project file | project=%s | field=%s | path=%s",
-            project_file,
-            field_name,
-            candidate,
-        )
-        return
+    def ensure_image_entries(self) -> None:
+        """Legacy compatibility method. Ensures at least one image exists if needed."""
+        if not self.images:
+            self.add_image("")
 
-    project_dir = project_file.parent.resolve()
-    resolved_parent = (project_dir / candidate.parent).resolve(strict=False)
-    resolved_target = (project_dir / candidate).resolve(strict=False)
-    if not resolved_parent.is_relative_to(project_dir) or not resolved_target.is_relative_to(
-        project_dir
-    ):
-        raise ValueError(f"Projektpfad verlässt das Projektverzeichnis ({field_name}): {raw_path}")
+    def sync_from_active_image(self) -> None:
+        """Legacy compatibility method (No-Op). New model handles this automatically."""
+        pass
 
-
-def _relativize_project_asset_paths(
-    payload: dict[str, Any],
-    project: ProjectData,
-    target_project_file: Path,
-) -> None:
-    payload["image_path"] = _serialized_asset_path(
-        project.image_path,
-        project_file=project.project_file,
-        target_project_file=target_project_file,
-    )
-    payload["reference_path"] = _serialized_asset_path(
-        project.reference_path,
-        project_file=project.project_file,
-        target_project_file=target_project_file,
-    )
-    for raw_image, entry in zip(payload.get("images", []), project.images, strict=False):
-        raw_image["path"] = _serialized_asset_path(
-            entry.path,
-            project_file=project.project_file,
-            target_project_file=target_project_file,
-        )
+    def sync_to_active_image(self) -> None:
+        """Legacy compatibility method (No-Op). New model handles this automatically."""
+        pass
 
 
-def _serialized_asset_path(
-    raw_path: str,
-    *,
-    project_file: Path | None,
-    target_project_file: Path,
-) -> str:
-    if not raw_path:
-        return raw_path
-
-    resolved = _resolve_project_asset_path(raw_path, project_file)
-    if not resolved.is_absolute():
-        return raw_path
-
-    target_dir = target_project_file.parent.resolve()
+def _to_float(val: Any) -> float | None:
+    if val is None:
+        return None
     try:
-        return resolved.relative_to(target_dir).as_posix()
-    except ValueError:
-        return str(resolved)
+        return float(val)
+    except (TypeError, ValueError):
+        return None

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication
 
 from core.logging_setup import configure_logging
 from ui.main_window import MainWindow
+from ui.smoke_test_runner import run_synthetic_smoke_test
 from ui.theme import apply_theme
 from ui.workspace_controller import WorkspaceController
 
@@ -106,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
             def _run() -> None:
                 try:
                     assert window is not None
-                    result = window.run_synthetic_smoke_test(args.smoke_output)
+                    result = run_synthetic_smoke_test(window, args.smoke_output)
                     result_holder["result"] = (
                         f"smoke-test export={result.image_path} metadata={result.metadata_path}"
                     )

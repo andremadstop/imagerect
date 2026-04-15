@@ -241,15 +241,15 @@ def build_stylesheet() -> str:
 
 def make_symbol_icon(symbol: str, size: int = 28) -> QIcon:
     pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
+    pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.TextAntialiasing)
+    painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
     font = QFont()
     font.setFamilies(["Inter", "Segoe UI Emoji", "Noto Color Emoji", "Sans Serif"])
     font.setPixelSize(int(size * 0.7))
     painter.setFont(font)
     painter.setPen(QColor(TEXT))
-    painter.drawText(pixmap.rect(), Qt.AlignCenter, symbol)
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, symbol)
     painter.end()
     return QIcon(pixmap)
 
