@@ -1544,6 +1544,7 @@ class MainWindow(QMainWindow):
             try:
                 homography_for_entry(entry)
             except Exception:
+                logger.debug("Skipping entry in export state check: homography invalid")
                 continue
             image_path = self.project.resolve_image_entry_path(entry)
             if image_path is not None and image_path.exists():
