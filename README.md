@@ -258,6 +258,10 @@ The file [tests/sample_data/synthetic_reference.dxf](/home/andre/Workspace/Code/
 
 Contributions should stay focused on the local-first rectification workflow. Keep changes small, add or extend tests with each behavior change, and run the local quality toolchain before opening a pull request.
 
+## Documentation
+
+- [User Guide & Tutorial](docs/USER_GUIDE.md) - Full reference manual and step-by-step tutorial.
+
 ## License
 
 ImageRect is released under the MIT License. See [LICENSE](/home/andre/Workspace/Code/imagerect/LICENSE).
