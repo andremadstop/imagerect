@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication
 from core.logging_setup import configure_logging
 from ui.main_window import MainWindow
 from ui.theme import apply_theme
+from ui.workspace_controller import WorkspaceController
 
 logger = logging.getLogger(__name__)
 
@@ -67,17 +68,32 @@ def main(argv: list[str] | None = None) -> int:
         if icon_path.exists():
             app.setWindowIcon(QIcon(str(icon_path)))
         apply_theme(app)
-        window = MainWindow()
+        window = MainWindow() if args.smoke_test else None
+        controller = None if args.smoke_test else WorkspaceController()
 
-        if args.project:
-            window.load_project_file(args.project)
-        if args.image:
-            window.load_image_file(args.image)
-        if args.reference:
-            if args.reference.suffix.lower() in {".e57", ".obj"}:
-                window.load_3d_reference_file(args.reference)
-            else:
-                window.load_reference_file(args.reference)
+        if args.smoke_test and window is not None:
+            if args.project:
+                window.load_project_file(args.project)
+            if args.image:
+                window.load_image_file(args.image)
+            if args.reference:
+                if args.reference.suffix.lower() in {".e57", ".obj"}:
+                    window.load_3d_reference_file(args.reference)
+                else:
+                    window.load_reference_file(args.reference)
+        elif controller is not None:
+            if args.project:
+                controller.load_project_file(args.project)
+            if args.image:
+                controller.show_rectify_workspace()
+                controller.rectify_window.load_image_file(args.image)
+            if args.reference:
+                if args.reference.suffix.lower() in {".e57", ".obj"}:
+                    controller.rectify_window.load_3d_reference_file(args.reference)
+                    controller.show_three_d_workspace()
+                else:
+                    controller.rectify_window.load_reference_file(args.reference)
+                    controller.show_rectify_workspace()
     except Exception as exc:
         logger.exception("Application startup failed")
         print(f"startup error: {exc}", file=sys.stderr)
@@ -89,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
 
             def _run() -> None:
                 try:
+                    assert window is not None
                     result = window.run_synthetic_smoke_test(args.smoke_output)
                     result_holder["result"] = (
                         f"smoke-test export={result.image_path} metadata={result.metadata_path}"
@@ -112,7 +129,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"smoke-test failed: {result_holder['error']}", file=sys.stderr)
             return smoke_exit_code
 
-        window.show()
+        assert controller is not None
+        controller.show_initial_ui()
+        if args.project or args.image or args.reference:
+            controller.show_rectify_workspace()
         ui_exit_code = int(app.exec())
         logger.info("Application exit | code=%s", ui_exit_code)
         return ui_exit_code

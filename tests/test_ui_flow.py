@@ -86,7 +86,7 @@ def test_new_project_clears_state(main_window: Any, qtbot: Any, tmp_path: Path) 
     assert main_window.reference_2d is None
     assert main_window.source_image is None
     assert main_window.point_table.rowCount() == 0
-    assert main_window.action_export.isEnabled() is False
+    assert main_window.action_open_review_workspace.isEnabled() is True
 
 
 def test_save_load_roundtrip_preserves_ui_state(
@@ -126,8 +126,8 @@ def test_export_is_blocked_without_homography(main_window: Any, tmp_path: Path) 
     point.reference_xy = (0.0, 0.0)
     main_window._refresh_ui()
 
-    assert main_window.action_export.isEnabled() is False
-    assert "four paired points" in main_window.action_export.toolTip()
+    assert main_window.action_open_review_workspace.isEnabled() is True
+    assert "four paired points" in main_window.action_open_review_workspace.toolTip()
 
 
 def test_export_enables_after_four_point_homography(main_window: Any, tmp_path: Path) -> None:
@@ -150,8 +150,11 @@ def test_export_enables_after_four_point_homography(main_window: Any, tmp_path: 
     main_window._recompute_transform()
     main_window._refresh_ui()
 
-    assert main_window.action_export.isEnabled() is True
-    assert main_window.action_export.toolTip() == "Export the rectified image or mosaic."
+    assert main_window.action_open_review_workspace.isEnabled() is True
+    assert (
+        main_window.action_open_review_workspace.toolTip()
+        == "Open the output and review workspace. Export is ready."
+    )
 
 
 def test_point_can_be_disabled_without_deleting(main_window: Any, tmp_path: Path) -> None:
@@ -173,7 +176,7 @@ def test_point_can_be_disabled_without_deleting(main_window: Any, tmp_path: Path
 
     main_window._recompute_transform()
     main_window._refresh_ui()
-    assert main_window.action_export.isEnabled() is True
+    assert main_window.action_open_review_workspace.isEnabled() is True
 
     active_item = main_window.point_table.item(0, 7)
     assert active_item is not None
@@ -181,14 +184,14 @@ def test_point_can_be_disabled_without_deleting(main_window: Any, tmp_path: Path
 
     assert len(main_window.project.points) == 4
     assert main_window.project.points[0].enabled is False
-    assert main_window.action_export.isEnabled() is False
+    assert main_window.action_open_review_workspace.isEnabled() is True
 
     active_item = main_window.point_table.item(0, 7)
     assert active_item is not None
     active_item.setCheckState(Qt.Checked)
 
     assert main_window.project.points[0].enabled is True
-    assert main_window.action_export.isEnabled() is True
+    assert main_window.action_open_review_workspace.isEnabled() is True
 
 
 def test_layer_buttons_toggle_all_visibility(main_window: Any, tmp_path: Path) -> None:
@@ -266,13 +269,14 @@ def _all_main_actions(main_window: Any) -> list[QAction]:
         main_window.action_load_reference3d,
         main_window.action_image_roi,
         main_window.action_reference_roi,
+        main_window.action_open_project_hub,
+        main_window.action_open_3d_workspace,
+        main_window.action_open_review_workspace,
         main_window.action_fit_reference_view,
         main_window.action_fit_reference_roi_view,
         main_window.action_fit_image_view,
         main_window.action_define_plane_from_points,
         main_window.action_define_plane_auto,
-        main_window.action_export,
-        main_window.action_toggle_project_panel,
         main_window.action_delete_point,
         main_window.action_move_up,
         main_window.action_move_down,

@@ -34,6 +34,19 @@ def test_view_menu_contains_fit_actions(qtbot: Any) -> None:
     assert window.action_fit_image_view.shortcut().toString() == "Ctrl+1"
 
 
+def test_workspace_menu_contains_workspace_actions(qtbot: Any) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    menu_titles = [action.text() for action in window.menuBar().actions()]
+
+    assert "Arbeitsbereiche" in menu_titles
+    assert window.action_open_project_hub.text() == "Projektsteuerung"
+    assert window.action_open_3d_workspace.text() == "3D-Modul öffnen"
+    assert window.action_open_review_workspace.text() == "Ausgabe / Prüfung"
+    assert window.action_open_review_workspace.shortcut().toString() == "Ctrl+E"
+
+
 def test_fit_to_dxf_calls_viewer_method(monkeypatch: Any, qtbot: Any) -> None:
     fit_calls: list[str] = []
     monkeypatch.setattr(

@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
-    QDockWidget,
     QFileDialog,
     QFrame,
     QGroupBox,
@@ -26,7 +26,6 @@ from PySide6.QtWidgets import (
     QProgressDialog,
     QPushButton,
     QSplitter,
-    QStackedWidget,
     QStatusBar,
     QToolBar,
     QVBoxLayout,
@@ -98,6 +97,12 @@ logger = logging.getLogger(__name__)
 class MainWindow(QMainWindow):
     """Main application window with 2D and 3D reference workflows."""
 
+    project_state_changed = Signal()
+    project_path_changed = Signal(object)
+    request_project_hub = Signal()
+    request_three_d_workspace = Signal()
+    request_review_workspace = Signal()
+
     def __init__(self) -> None:
         super().__init__()
         self.project = ProjectData()
@@ -115,6 +120,9 @@ class MainWindow(QMainWindow):
         self._history_index = 0
         self._restoring_history = False
         self._saved_project_state = self._project_state_snapshot()
+        self._last_export_path: Path | None = None
+        self._last_export_metadata_path: Path | None = None
+        self.close_guard: Callable[[QWidget], bool] | None = None
 
         self._build_ui()
         self._create_actions()
@@ -199,12 +207,15 @@ class MainWindow(QMainWindow):
         self.project = ProjectData.load(project_path)
         self.project.sync_from_active_image()
         self.project_path = project_path
+        self._last_export_path = None
+        self._last_export_metadata_path = None
         self.selected_point_id = None
         self.pending_plane_points = []
         self.plane_pick_mode = False
         self._reload_assets_from_project()
         self._reset_history()
         self._mark_project_clean()
+        self.project_path_changed.emit(project_path)
         logger.info("Loaded project | path=%s | images=%d", project_path, len(self.project.images))
         self._refresh_ui(status=f"Loaded project {project_path.name}")
 
@@ -224,6 +235,7 @@ class MainWindow(QMainWindow):
         self.project.save(target)
         self.project_path = target
         self._mark_project_clean()
+        self.project_path_changed.emit(target)
         self._update_window_title()
         logger.info("Saved project | path=%s", target)
         self.statusBar().showMessage(f"Saved project to {target}", 5000)
@@ -244,7 +256,11 @@ class MainWindow(QMainWindow):
         if not event.spontaneous():
             super().closeEvent(event)
             return
-        if not self._confirm_close_with_unsaved_changes():
+        if self.close_guard is not None:
+            if not self.close_guard(self):
+                event.ignore()
+                return
+        elif not self._confirm_close_with_unsaved_changes():
             event.ignore()
             return
         super().closeEvent(event)
@@ -273,6 +289,9 @@ class MainWindow(QMainWindow):
         if decision == QMessageBox.Save:
             return self.save_project_file()
         return bool(decision == QMessageBox.Discard)
+
+    def confirm_close_with_unsaved_changes(self) -> bool:
+        return self._confirm_close_with_unsaved_changes()
 
     def run_export(self) -> RectificationExportResult | None:
         self.project.sync_to_active_image()
@@ -383,6 +402,9 @@ class MainWindow(QMainWindow):
             finally:
                 progress_dialog.close()
 
+        self._last_export_path = result.image_path
+        self._last_export_metadata_path = result.metadata_path
+        self.project_state_changed.emit()
         self.statusBar().showMessage(f"Exported {result.image_path.name}", 5000)
         logger.info("Export finished in UI | image=%s", result.image_path)
         metadata_text = (
@@ -396,6 +418,43 @@ class MainWindow(QMainWindow):
             f"Image: {result.image_path}{metadata_text}",
         )
         return result
+
+    def show_export_preview(self) -> bool:
+        try:
+            return self._confirm_export_preview()
+        except Exception as exc:
+            logger.exception("Export preview failed")
+            QMessageBox.critical(self, "Preview failed", str(exc))
+            return False
+
+    def project_summary(self) -> dict[str, object]:
+        self.project.ensure_image_entries()
+        reference_name = (
+            Path(self.project.reference_path).name if self.project.reference_path else "keine"
+        )
+        active_image = Path(self.project.image_path).name if self.project.image_path else "keines"
+        return {
+            "name": self.project.name,
+            "project_path": str(self.project_path) if self.project_path is not None else "",
+            "dirty": self._has_unsaved_changes(),
+            "image_count": len([entry for entry in self.project.images if entry.path]),
+            "active_image": active_image,
+            "reference_name": reference_name,
+            "reference_type": self.project.reference_type,
+            "has_working_plane": self.reference_3d is not None
+            and self.reference_3d.working_plane is not None,
+            "paired_point_count": len(self.project.paired_points()),
+            "export_ready": self._export_action_state()[0],
+            "last_export_path": str(self._last_export_path) if self._last_export_path else "",
+            "last_export_metadata_path": (
+                str(self._last_export_metadata_path) if self._last_export_metadata_path else ""
+            ),
+            "images": [
+                self._entry_label(entry, index)
+                for index, entry in enumerate(self.project.images)
+                if entry.path
+            ],
+        }
 
     def run_synthetic_smoke_test(self, output_root: Path) -> RectificationExportResult:
         """Exercise the window, solver, and export path with synthetic data."""
@@ -487,24 +546,27 @@ class MainWindow(QMainWindow):
         )
 
     def _build_ui(self) -> None:
-        self.setWindowTitle("ImageRect — Metric Image Rectification")
+        self.setWindowTitle("ImageRect — 2D-Arbeitsplatz")
         self.setMinimumSize(1200, 800)
         self.resize(1560, 980)
 
         self.image_viewer = ImageViewer(self)
         self.reference_viewer = Reference2DViewer(self)
         self.reference3d_viewer = Reference3DViewer(self)
-        self.reference_stack = QStackedWidget(self)
-        self.reference_stack.addWidget(self.reference_viewer)
-        self.reference_stack.addWidget(self.reference3d_viewer)
 
         self.point_table = PointTable(self)
         self.rms_label = QLabel("RMS: n/a")
         self.warning_label = QLabel("Warnings: need at least four point pairs")
         self.workflow_label = QLabel("Workflow: click image point, then matching reference point")
+        self.active_image_label = QLabel("Aktives Bild: keines")
+        self.reference_status_label = QLabel("Referenz: keine")
+        self.solve_status_label = QLabel("Solve: n/a")
         self.layer_list = QListWidget(self)
         self.layer_select_all_button = QPushButton("All", self)
         self.layer_select_none_button = QPushButton("None", self)
+        self.open_3d_workspace_button = QPushButton("3D-Modul öffnen", self)
+        self.reference_placeholder = QFrame(self)
+        self.reference_placeholder.setObjectName("referencePlaceholder")
         self.info_separator = QFrame(self)
         self.info_separator.setObjectName("infoSeparator")
         self.info_separator.setFrameShape(QFrame.HLine)
@@ -512,7 +574,25 @@ class MainWindow(QMainWindow):
         right_panel = QWidget(self)
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.addWidget(self.reference_stack, stretch=1)
+        placeholder_layout = QVBoxLayout(self.reference_placeholder)
+        placeholder_layout.setContentsMargins(24, 24, 24, 24)
+        placeholder_layout.setSpacing(12)
+        placeholder_title = QLabel("3D-Referenz im separaten Arbeitsfenster")
+        placeholder_title.setStyleSheet(f"color: {TEXT_BRIGHT}; font-weight: 600;")
+        placeholder_body = QLabel(
+            "Dieses Projekt nutzt eine 3D-Referenz. Plane-Definition, 3D-Picks und Ableitung "
+            "laufen jetzt im eigenen 3D-Modul."
+        )
+        placeholder_body.setWordWrap(True)
+        placeholder_body.setStyleSheet(f"color: {TEXT_DIM};")
+        placeholder_layout.addStretch(1)
+        placeholder_layout.addWidget(placeholder_title)
+        placeholder_layout.addWidget(placeholder_body)
+        placeholder_layout.addWidget(self.open_3d_workspace_button)
+        placeholder_layout.addStretch(1)
+        right_layout.addWidget(self.reference_viewer, stretch=1)
+        right_layout.addWidget(self.reference_placeholder, stretch=1)
+        self.reference_placeholder.hide()
 
         self.layer_box = QGroupBox("Layers")
         layer_layout = QVBoxLayout(self.layer_box)
@@ -537,6 +617,13 @@ class MainWindow(QMainWindow):
         table_layout = QVBoxLayout(table_box)
         table_layout.setContentsMargins(0, 0, 0, 0)
         table_layout.setSpacing(8)
+        context_row = QWidget(self)
+        context_layout = QHBoxLayout(context_row)
+        context_layout.setContentsMargins(8, 6, 8, 0)
+        context_layout.setSpacing(16)
+        context_layout.addWidget(self.active_image_label, stretch=1)
+        context_layout.addWidget(self.reference_status_label, stretch=1)
+        context_layout.addWidget(self.solve_status_label, stretch=1)
         info_row = QWidget(self)
         info_layout = QHBoxLayout(info_row)
         info_layout.setContentsMargins(8, 6, 8, 6)
@@ -546,6 +633,9 @@ class MainWindow(QMainWindow):
         table_box.setStyleSheet(f"background: {BG_DARK};")
         self.workflow_label.setStyleSheet(f"color: {TEXT_DIM}; font-style: italic;")
         self.warning_label.setStyleSheet(f"color: {WARNING};")
+        self.active_image_label.setStyleSheet(f"color: {TEXT_DIM};")
+        self.reference_status_label.setStyleSheet(f"color: {TEXT_DIM};")
+        self.solve_status_label.setStyleSheet(f"color: {TEXT_DIM};")
         rms_font = QFont()
         rms_font.setFamilies(["JetBrains Mono", "SF Mono", "DejaVu Sans Mono", "Monospace"])
         rms_font.setPixelSize(16)
@@ -553,6 +643,7 @@ class MainWindow(QMainWindow):
         self.rms_label.setFont(rms_font)
         self.rms_label.setStyleSheet(f"color: {TEXT_BRIGHT};")
         table_layout.addWidget(self.info_separator)
+        table_layout.addWidget(context_row)
         table_layout.addWidget(info_row)
         table_layout.addWidget(self.point_table)
 
@@ -568,16 +659,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(main_splitter)
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar(self))
-
         self.project_panel = ProjectPanel(self)
-        self.project_dock = QDockWidget("Project Settings", self)
-        self.project_dock.setObjectName("projectSettingsDock")
-        self.project_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
-        self.project_dock.setWidget(self.project_panel)
-        self.project_dock.setMinimumWidth(320)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.project_dock)
 
     def _create_actions(self) -> None:
+        self.action_open_project_hub = QAction("Projektsteuerung", self)
         self.action_new = QAction("New", self)
         self.action_new.setShortcut(QKeySequence.New)
         self.action_open_project = QAction("Open Project", self)
@@ -597,6 +682,9 @@ class MainWindow(QMainWindow):
         self.action_image_roi.setCheckable(True)
         self.action_reference_roi = QAction("DXF Region", self)
         self.action_reference_roi.setCheckable(True)
+        self.action_open_3d_workspace = QAction("3D-Modul öffnen", self)
+        self.action_open_review_workspace = QAction("Ausgabe / Prüfung", self)
+        self.action_open_review_workspace.setShortcut(QKeySequence("Ctrl+E"))
         self.action_fit_reference_view = QAction("An DXF anpassen", self)
         self.action_fit_reference_view.setShortcut(QKeySequence("Ctrl+0"))
         self.action_fit_reference_roi_view = QAction("An ROI anpassen", self)
@@ -605,11 +693,6 @@ class MainWindow(QMainWindow):
         self.action_fit_image_view.setShortcut(QKeySequence("Ctrl+1"))
         self.action_define_plane_from_points = QAction("Plane From 3 Points", self)
         self.action_define_plane_auto = QAction("Plane Auto", self)
-        self.action_export = QAction("Export Rectified Image", self)
-        self.action_export.setShortcut(QKeySequence("Ctrl+E"))
-        self.action_toggle_project_panel = self.project_dock.toggleViewAction()
-        self.action_toggle_project_panel.setText("Project Settings")
-        self.action_toggle_project_panel.setShortcut(QKeySequence("Ctrl+P"))
         self.action_delete_point = QAction("Delete Point", self)
         self.action_delete_point.setShortcut(QKeySequence.Delete)
         self.action_move_up = QAction("Move Point Up", self)
@@ -624,15 +707,14 @@ class MainWindow(QMainWindow):
         self.action_export_diagnose_package = QAction("Diagnose-Paket exportieren...", self)
         self._apply_action_descriptions()
 
+        self.action_open_project_hub.setIcon(make_symbol_icon("🗂"))
         self.action_load_image.setIcon(make_symbol_icon("📷"))
         self.action_lens_correction.setIcon(make_symbol_icon("🔍"))
         self.action_load_reference.setIcon(make_symbol_icon("📐"))
-        self.action_load_reference3d.setIcon(make_symbol_icon("📦"))
         self.action_image_roi.setIcon(make_symbol_icon("✂"))
         self.action_reference_roi.setIcon(make_symbol_icon("▭"))
-        self.action_define_plane_from_points.setIcon(make_symbol_icon("◫"))
-        self.action_define_plane_auto.setIcon(make_symbol_icon("🧭"))
-        self.action_export.setIcon(make_symbol_icon("💾"))
+        self.action_open_3d_workspace.setIcon(make_symbol_icon("📦"))
+        self.action_open_review_workspace.setIcon(make_symbol_icon("💾"))
         self.action_undo.setIcon(make_symbol_icon("↩"))
         self.action_redo.setIcon(make_symbol_icon("↪"))
 
@@ -645,9 +727,8 @@ class MainWindow(QMainWindow):
         menu_file.addAction(self.action_load_image)
         menu_file.addAction(self.action_lens_correction)
         menu_file.addAction(self.action_load_reference)
-        menu_file.addAction(self.action_load_reference3d)
         menu_file.addSeparator()
-        menu_file.addAction(self.action_export)
+        menu_file.addAction(self.action_open_review_workspace)
 
         menu_view = self.menuBar().addMenu("Ansicht")
         menu_view.addAction(self.action_fit_reference_view)
@@ -656,8 +737,11 @@ class MainWindow(QMainWindow):
         menu_view.addSeparator()
         menu_view.addAction(self.action_image_roi)
         menu_view.addAction(self.action_reference_roi)
-        menu_view.addSeparator()
-        menu_view.addAction(self.action_toggle_project_panel)
+
+        menu_workspace = self.menuBar().addMenu("Arbeitsbereiche")
+        menu_workspace.addAction(self.action_open_project_hub)
+        menu_workspace.addAction(self.action_open_3d_workspace)
+        menu_workspace.addAction(self.action_open_review_workspace)
 
         menu_edit = self.menuBar().addMenu("Edit")
         menu_edit.addAction(self.action_undo)
@@ -667,10 +751,6 @@ class MainWindow(QMainWindow):
         menu_edit.addAction(self.action_move_up)
         menu_edit.addAction(self.action_move_down)
 
-        menu_3d = self.menuBar().addMenu("3D")
-        menu_3d.addAction(self.action_define_plane_from_points)
-        menu_3d.addAction(self.action_define_plane_auto)
-
         menu_help = self.menuBar().addMenu("Hilfe")
         menu_help.addAction(self.action_open_log_directory)
         menu_help.addAction(self.action_export_diagnose_package)
@@ -679,18 +759,16 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         toolbar.setIconSize(icon_size())
+        toolbar.addAction(self.action_open_project_hub)
         toolbar.addAction(self.action_load_image)
         toolbar.addAction(self.action_lens_correction)
         toolbar.addAction(self.action_load_reference)
-        toolbar.addAction(self.action_load_reference3d)
         toolbar.addSeparator()
         toolbar.addAction(self.action_image_roi)
         toolbar.addAction(self.action_reference_roi)
         toolbar.addSeparator()
-        toolbar.addAction(self.action_define_plane_from_points)
-        toolbar.addAction(self.action_define_plane_auto)
-        toolbar.addSeparator()
-        toolbar.addAction(self.action_export)
+        toolbar.addAction(self.action_open_3d_workspace)
+        toolbar.addAction(self.action_open_review_workspace)
         toolbar.addSeparator()
         toolbar.addAction(self.action_undo)
         toolbar.addAction(self.action_redo)
@@ -698,6 +776,7 @@ class MainWindow(QMainWindow):
 
     def _apply_action_descriptions(self) -> None:
         descriptions = {
+            self.action_open_project_hub: "Open the project organizer and workspace launcher",
             self.action_new: "Start a new empty project",
             self.action_open_project: "Open a saved ImageRect project",
             self.action_save_project: "Save the current project",
@@ -708,13 +787,13 @@ class MainWindow(QMainWindow):
             self.action_load_reference3d: "Load an E57 point cloud or OBJ mesh",
             self.action_image_roi: "Draw or edit the image clip polygon",
             self.action_reference_roi: "Draw or edit the DXF export region",
+            self.action_open_3d_workspace: "Open the dedicated 3D module window",
+            self.action_open_review_workspace: "Open the output and review workspace",
             self.action_fit_reference_view: "Fit the full DXF reference to the viewport",
             self.action_fit_reference_roi_view: "Fit the current DXF ROI to the viewport",
             self.action_fit_image_view: "Fit the source image to the viewport",
             self.action_define_plane_from_points: "Define a 3D working plane from three picks",
             self.action_define_plane_auto: "Estimate a 3D working plane automatically",
-            self.action_export: "Export the rectified image or mosaic",
-            self.action_toggle_project_panel: "Show or hide the project settings panel",
             self.action_delete_point: "Delete the selected control point",
             self.action_move_up: "Move the selected point one row up",
             self.action_move_down: "Move the selected point one row down",
@@ -755,15 +834,19 @@ class MainWindow(QMainWindow):
         self.layer_list.itemChanged.connect(self._layer_item_changed)
         self.layer_select_all_button.clicked.connect(lambda: self._set_all_layers_visible(True))
         self.layer_select_none_button.clicked.connect(lambda: self._set_all_layers_visible(False))
+        self.open_3d_workspace_button.clicked.connect(self.request_three_d_workspace.emit)
 
-        self.action_new.triggered.connect(self._new_project)
+        self.action_new.triggered.connect(self._start_new_project)
         self.action_open_project.triggered.connect(self._open_project_dialog)
         self.action_save_project.triggered.connect(lambda checked=False: self.save_project_file())
         self.action_save_project_as.triggered.connect(self.save_project_as)
+        self.action_open_project_hub.triggered.connect(self.request_project_hub.emit)
         self.action_load_image.triggered.connect(self._open_image_dialog)
         self.action_lens_correction.triggered.connect(self._open_lens_dialog)
         self.action_load_reference.triggered.connect(self._open_reference_dialog)
         self.action_load_reference3d.triggered.connect(self._open_reference3d_dialog)
+        self.action_open_3d_workspace.triggered.connect(self.request_three_d_workspace.emit)
+        self.action_open_review_workspace.triggered.connect(self.request_review_workspace.emit)
         self.action_fit_reference_view.triggered.connect(
             self.reference_viewer.fit_reference_to_view
         )
@@ -775,7 +858,6 @@ class MainWindow(QMainWindow):
         self.action_reference_roi.toggled.connect(self._toggle_reference_roi_mode)
         self.action_define_plane_from_points.triggered.connect(self._start_plane_from_3_points)
         self.action_define_plane_auto.triggered.connect(self._define_plane_auto)
-        self.action_export.triggered.connect(self._run_export_dialog)
         self.action_delete_point.triggered.connect(self._delete_selected_point)
         self.action_move_up.triggered.connect(lambda checked=False: self._move_selected_point(-1))
         self.action_move_down.triggered.connect(lambda checked=False: self._move_selected_point(1))
@@ -853,6 +935,8 @@ class MainWindow(QMainWindow):
                 self._show_file_action_error("3D-Referenz laden fehlgeschlagen", exc)
 
     def _open_project_dialog(self) -> None:
+        if not self._confirm_close_with_unsaved_changes():
+            return
         file_name, _ = QFileDialog.getOpenFileName(
             self,
             "Open Project",
@@ -932,6 +1016,11 @@ class MainWindow(QMainWindow):
         self._reset_history()
         self._mark_project_clean()
         self._refresh_ui(status="Started a new project")
+
+    def _start_new_project(self) -> None:
+        if not self._confirm_close_with_unsaved_changes():
+            return
+        self._new_project()
 
     def _handle_image_pick(self, x: float, y: float) -> None:
         point = self._resolve_target_point("image")
@@ -1514,6 +1603,20 @@ class MainWindow(QMainWindow):
         self._refresh_project_panel_context()
         self._populate_layer_list()
         self._sync_reference_mode()
+        active_image_name = (
+            Path(self.project.image_path).name if self.project.image_path else "keines"
+        )
+        self.active_image_label.setText(f"Aktives Bild: {active_image_name}")
+        if self.project.reference_path:
+            reference_name = Path(self.project.reference_path).name
+            reference_type = self.project.reference_type.upper()
+            self.reference_status_label.setText(f"Referenz: {reference_name} ({reference_type})")
+        else:
+            self.reference_status_label.setText("Referenz: keine")
+        solve_state = "fertig" if self.project.transform_matrix is not None else "offen"
+        self.solve_status_label.setText(
+            f"Solve: {solve_state} | Punkte: {len(self.project.paired_points())}"
+        )
 
         if self.project.rms_error is None:
             self.rms_label.setText("RMS: n/a")
@@ -1531,6 +1634,7 @@ class MainWindow(QMainWindow):
         self._update_export_action()
         if status is not None:
             self.statusBar().showMessage(status, 5000)
+        self.project_state_changed.emit()
 
     def _reload_assets_from_project(self) -> None:
         self.project.sync_from_active_image()
@@ -1599,37 +1703,37 @@ class MainWindow(QMainWindow):
 
     def _sync_reference_mode(self) -> None:
         if self.project.reference_type == "dxf" or self.reference_3d is None:
-            self.reference_stack.setCurrentWidget(self.reference_viewer)
+            self.reference_viewer.show()
+            self.reference_placeholder.hide()
             self.layer_box.show()
             self.action_reference_roi.setVisible(True)
             self.action_fit_reference_view.setVisible(True)
             self.action_fit_reference_roi_view.setVisible(True)
-            self.action_define_plane_from_points.setVisible(False)
-            self.action_define_plane_auto.setVisible(False)
             self.workflow_label.setText(
                 "Workflow: click image point, then matching DXF reference point"
             )
         else:
-            self.reference_stack.setCurrentWidget(self.reference3d_viewer)
+            self.reference_viewer.hide()
+            self.reference_placeholder.show()
             self.layer_box.hide()
             self.action_reference_roi.setVisible(False)
             self.action_fit_reference_view.setVisible(False)
             self.action_fit_reference_roi_view.setVisible(False)
-            self.action_define_plane_from_points.setVisible(True)
-            self.action_define_plane_auto.setVisible(True)
             if self.reference_3d.working_plane is None:
                 self.workflow_label.setText(
-                    "Workflow: define a working plane, then click image and 3D reference points"
+                    "Workflow: prepare the 3D plane in the separate 3D module, then continue in 2D"
                 )
             else:
                 self.workflow_label.setText(
-                    "Workflow: click image point, then matching 3D reference point on the plane"
+                    "Workflow: 3D plane ready; continue with 2D QA or reopen the 3D module"
                 )
 
     def _update_3d_actions(self) -> None:
         enabled = self.reference_3d is not None
         self.action_define_plane_from_points.setEnabled(enabled)
         self.action_define_plane_auto.setEnabled(enabled)
+        self.action_open_3d_workspace.setEnabled(True)
+        self.open_3d_workspace_button.setEnabled(True)
         self.action_lens_correction.setEnabled(self.source_image_original is not None)
         self.action_image_roi.setEnabled(self.source_image is not None)
         self.action_fit_image_view.setEnabled(self.source_image is not None)
@@ -1665,9 +1769,11 @@ class MainWindow(QMainWindow):
 
     def _update_export_action(self) -> None:
         enabled, description = self._export_action_state()
-        self.action_export.setEnabled(enabled)
-        self.action_export.setStatusTip(description)
-        self.action_export.setToolTip(description)
+        review_hint = "Open the output and review workspace."
+        detail = "Export is ready." if enabled else description
+        self.action_open_review_workspace.setEnabled(True)
+        self.action_open_review_workspace.setStatusTip(f"{review_hint} {detail}")
+        self.action_open_review_workspace.setToolTip(f"{review_hint} {detail}")
 
     def _show_dwg_help_dialog(self) -> None:
         QMessageBox.information(
@@ -1776,7 +1882,7 @@ class MainWindow(QMainWindow):
 
     def _update_window_title(self) -> None:
         project_label = self.project_path.name if self.project_path else self.project.name
-        self.setWindowTitle(f"ImageRect — Metric Image Rectification — {project_label}")
+        self.setWindowTitle(f"ImageRect — 2D-Arbeitsplatz — {project_label}")
 
     def _refresh_project_panel_context(self) -> None:
         bounds = self._current_panel_bounds()
