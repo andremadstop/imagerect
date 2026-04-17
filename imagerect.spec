@@ -14,7 +14,10 @@ a = Analysis(
     ["main.py"],
     pathex=[str(root)],
     binaries=[],
-    datas=[("assets/icon.png", "assets")],
+    datas=[
+        ("assets/icon.png", "assets"),
+        ("tests/sample_data/synthetic_reference.dxf", "tests/sample_data"),
+    ],
     hiddenimports=[
         "PySide6.QtCore",
         "PySide6.QtGui",
