@@ -2,7 +2,7 @@
 ; Requires: Inno Setup 6+ (https://jrsoftware.org/isinfo.php)
 
 #define MyAppName "ImageRect"
-#define MyAppVersion "0.2.0"
+#define MyAppVersion "0.2.1"
 #define MyAppPublisher "Andre Stiebitz"
 #define MyAppURL "https://github.com/andremadstop/imagerect"
 #define MyAppExeName "ImageRect.exe"
