@@ -62,6 +62,10 @@ def test_log_directory_platform_specific(
 ) -> None:
     monkeypatch.setattr(logging_setup.sys, "platform", platform_name)
     monkeypatch.setenv(env_name, str(tmp_path / env_value))
+    # Path.home() reads USERPROFILE on Windows and HOME on Unix. Patch it
+    # directly so the test is host-platform independent.
+    fake_home = tmp_path / env_value
+    monkeypatch.setattr(logging_setup.Path, "home", classmethod(lambda _cls: fake_home))
 
     log_dir = logging_setup.log_directory()
 
