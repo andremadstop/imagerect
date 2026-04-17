@@ -76,7 +76,6 @@ def test_project_roundtrip_preserves_multiple_images(tmp_path: Path) -> None:
         ),
     ]
     project.active_image_index = 1
-    project.sync_from_active_image()
 
     path = tmp_path / "multi.imagerect.json"
     project.save(path)

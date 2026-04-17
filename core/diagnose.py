@@ -8,9 +8,8 @@ import logging
 import os
 import platform
 import sys
-import tempfile
 import zipfile
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from core.logging_setup import log_directory
@@ -28,7 +27,7 @@ def collect_system_info() -> dict[str, object]:
             return "not-installed"
 
     return {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "platform": platform.platform(),
         "python": platform.python_version(),
         "executable": sys.executable,
@@ -97,22 +96,18 @@ def _protected_roots() -> tuple[Path, ...]:
             if (value := os.environ.get(variable_name))
         )
 
-    return tuple(
-        path
-        for path in (
-            Path("/etc"),
-            Path("/usr"),
-            Path("/bin"),
-            Path("/sbin"),
-            Path("/lib"),
-            Path("/lib64"),
-            Path("/proc"),
-            Path("/sys"),
-            Path("/dev"),
-            Path("/boot"),
-            Path("/run"),
-            Path("/var/lib"),
-            Path("/var/run"),
-        )
-        if path != Path(tempfile.gettempdir()).resolve(strict=False)
+    return (
+        Path("/etc"),
+        Path("/usr"),
+        Path("/bin"),
+        Path("/sbin"),
+        Path("/lib"),
+        Path("/lib64"),
+        Path("/proc"),
+        Path("/sys"),
+        Path("/dev"),
+        Path("/boot"),
+        Path("/run"),
+        Path("/var/lib"),
+        Path("/var/run"),
     )

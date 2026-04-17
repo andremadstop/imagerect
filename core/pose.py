@@ -199,9 +199,13 @@ def build_camera_pose(
     return pose
 
 
+_XMP_SCAN_BYTES = 262_144  # XMP lives in the header; 256 KB covers JPEG/TIFF/RAW markers
+
+
 def _read_xmp_pose(path: Path) -> dict[str, Any] | None:
     try:
-        payload = path.read_bytes()
+        with path.open("rb") as stream:
+            payload = stream.read(_XMP_SCAN_BYTES)
     except OSError:
         return None
 

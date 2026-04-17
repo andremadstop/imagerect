@@ -19,7 +19,6 @@ def test_project_hub_updates_from_shared_project_state(qtbot: Any) -> None:
     controller.rectify_window.project.reference_type = "dxf"
     controller.rectify_window.project.images = [ImageEntry(path="/tmp/source.png")]
     controller.rectify_window.project.active_image_index = 0
-    controller.rectify_window.project.sync_from_active_image()
     controller.rectify_window._refresh_ui()
 
     assert controller.project_hub.project_name_label.text() == "Demo"

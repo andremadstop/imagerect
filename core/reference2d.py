@@ -190,7 +190,8 @@ def _extract_entity(
         try:
             for virtual_entity in entity.virtual_entities():
                 _extract_entity(virtual_entity, segments, vertices)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to expand INSERT block | error=%s", exc)
             return
 
 
@@ -250,6 +251,9 @@ def _units_from_code(code: int) -> str:
     return units_map.get(code, "mm")
 
 
+_DXF_EPSG_SCAN_BYTES = 1_048_576  # cap the raw EPSG scan at 1 MB
+
+
 def _extract_crs_epsg(document: Any, path: Path) -> int | None:
     for value in _iter_document_metadata_strings(document):
         match = re.search(r"\bEPSG[:= ]+(\d{4,6})\b", value, re.IGNORECASE)
@@ -257,11 +261,13 @@ def _extract_crs_epsg(document: Any, path: Path) -> int | None:
             return int(match.group(1))
 
     try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
+        with path.open("rb") as stream:
+            payload = stream.read(_DXF_EPSG_SCAN_BYTES)
     except OSError:
         logger.warning("Could not scan DXF text for EPSG metadata | path=%s", path)
         return None
 
+    text = payload.decode("utf-8", errors="ignore")
     match = re.search(r"\bEPSG[:= ]+(\d{4,6})\b", text, re.IGNORECASE)
     if match is None:
         return None

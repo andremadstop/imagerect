@@ -419,8 +419,7 @@ class MainWindow(QMainWindow):
         try:
             return self._confirm_export_preview()
         except Exception as exc:
-            logger.exception("Export preview failed")
-            QMessageBox.critical(self, "Preview failed", str(exc))
+            self._show_file_action_error("Preview failed", exc)
             return False
 
     def project_summary(self) -> dict[str, object]:
@@ -857,7 +856,12 @@ class MainWindow(QMainWindow):
 
     def _show_file_action_error(self, title: str, exc: Exception) -> None:
         logger.exception("%s | error=%s", title, exc)
-        QMessageBox.critical(self, title, str(exc))
+        message = str(exc) or exc.__class__.__name__
+        QMessageBox.critical(
+            self,
+            title,
+            f"{message}\n\nDetails findest du im Log (Hilfe → Log-Ordner öffnen).",
+        )
 
     def _run_export_dialog(self) -> None:
         try:
@@ -865,8 +869,7 @@ class MainWindow(QMainWindow):
                 return
             self.run_export()
         except Exception as exc:
-            logger.exception("Export dialog failed")
-            QMessageBox.critical(self, "Export failed", str(exc))
+            self._show_file_action_error("Export failed", exc)
 
     def _open_log_directory(self) -> None:
         directory = log_directory()
@@ -895,8 +898,7 @@ class MainWindow(QMainWindow):
         try:
             package_path = build_diagnose_package(Path(file_name), self.project_path)
         except Exception as exc:
-            logger.exception("Diagnose package export failed")
-            QMessageBox.critical(self, "Diagnose-Paket fehlgeschlagen", str(exc))
+            self._show_file_action_error("Diagnose-Paket fehlgeschlagen", exc)
             return
 
         QMessageBox.information(
@@ -1022,8 +1024,7 @@ class MainWindow(QMainWindow):
         try:
             plane = define_plane_ransac(source_points)
         except Exception as exc:
-            logger.exception("Automatic plane fit failed")
-            QMessageBox.critical(self, "Plane fit failed", str(exc))
+            self._show_file_action_error("Plane fit failed", exc)
             return
         self._apply_working_plane(plane, "Defined working plane automatically")
 

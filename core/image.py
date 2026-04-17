@@ -27,7 +27,21 @@ def load_image(path: str | Path) -> np.ndarray:
     image = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
     if image is None:
         raise ValueError(f"Bild konnte nicht gelesen werden: {image_path}")
+    _enforce_pixel_limit(image, image_path)
     return image
+
+
+def _enforce_pixel_limit(image: np.ndarray, image_path: Path) -> None:
+    height, width = image.shape[:2]
+    pixel_count = int(height) * int(width)
+    if pixel_count > MAX_IMAGE_PIXELS:
+        logger.warning(
+            "Rejected oversized image after decode | path=%s | pixels=%d | max=%d",
+            image_path,
+            pixel_count,
+            MAX_IMAGE_PIXELS,
+        )
+        raise ValueError("Bild zu groß. Limit: 500 Megapixel.")
 
 
 def image_to_rgb(image: np.ndarray) -> np.ndarray:
@@ -80,7 +94,7 @@ def _probe_image_size(image_path: Path) -> None:
         with warnings.catch_warnings():
             warnings.simplefilter("error", PILImage.DecompressionBombWarning)
             with PILImage.open(image_path) as image:
-                _ = image.size
+                width, height = image.size
     except (PILImage.DecompressionBombError, PILImage.DecompressionBombWarning):
         logger.warning(
             "Rejected oversized image during safety probe | path=%s | max_pixels=%d",
@@ -90,3 +104,13 @@ def _probe_image_size(image_path: Path) -> None:
         raise ValueError("Bild zu groß. Limit: 500 Megapixel.") from None
     except (UnidentifiedImageError, OSError):
         logger.debug("Pillow image probe skipped | path=%s", image_path)
+        return
+
+    if int(width) * int(height) > MAX_IMAGE_PIXELS:
+        logger.warning(
+            "Rejected oversized image during safety probe | path=%s | pixels=%d | max=%d",
+            image_path,
+            int(width) * int(height),
+            MAX_IMAGE_PIXELS,
+        )
+        raise ValueError("Bild zu groß. Limit: 500 Megapixel.")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +19,7 @@ UNIT_TO_MM = {
     "in": 25.4,
     "ft": 304.8,
 }
+MAX_PROJECT_FILE_BYTES = 16_777_216  # 16 MB is plenty for a control-point JSON
 logger = logging.getLogger(__name__)
 
 
@@ -412,15 +413,15 @@ class ProjectData:
             images.append(
                 ImageEntry(
                     path=str(raw_img.get("path", "")),
-                    lens_correction=raw_img.get("lens_correction"),
+                    lens_correction=_coerce_dict(raw_img.get("lens_correction")),
                     clip_polygon=_coerce_point_list(raw_img.get("clip_polygon")),
                     points=points,
                     reference_world_points=_coerce_reference_world_points(
                         raw_img.get("reference_world_points")
                     ),
-                    gps_pose=raw_img.get("gps_pose"),
+                    gps_pose=_coerce_dict(raw_img.get("gps_pose")),
                     rms_error=_to_float(raw_img.get("rms_error")),
-                    transform_matrix=raw_img.get("transform_matrix"),
+                    transform_matrix=_coerce_transform_matrix(raw_img.get("transform_matrix")),
                     warnings=[str(w) for w in raw_img.get("warnings", [])],
                 )
             )
@@ -442,30 +443,30 @@ class ProjectData:
             images.append(
                 ImageEntry(
                     path=str(payload.get("image_path", "")),
-                    lens_correction=payload.get("lens_correction"),
+                    lens_correction=_coerce_dict(payload.get("lens_correction")),
                     clip_polygon=_coerce_point_list(payload.get("clip_polygon")),
                     points=legacy_points,
                     reference_world_points=_coerce_reference_world_points(
                         payload.get("reference_world_points")
                     ),
-                    gps_pose=payload.get("gps_pose"),
+                    gps_pose=_coerce_dict(payload.get("gps_pose")),
                     rms_error=_to_float(payload.get("rms_error")),
-                    transform_matrix=payload.get("transform_matrix"),
+                    transform_matrix=_coerce_transform_matrix(payload.get("transform_matrix")),
                     warnings=[str(w) for w in payload.get("warnings", [])],
                 )
             )
 
-        export_settings = ExportSettings(**payload.get("export_settings", {}))
+        export_settings = _coerce_export_settings(payload.get("export_settings"))
         project = cls(
             name=str(payload.get("name", "Untitled")),
             images=images,
             active_image_index=int(payload.get("active_image_index", 0)),
             reference_path=str(payload.get("reference_path", "")),
             reference_type=str(payload.get("reference_type", "dxf")),
-            reference_crs_epsg=payload.get("reference_crs_epsg"),
+            reference_crs_epsg=_to_optional_int(payload.get("reference_crs_epsg")),
             export_settings=export_settings,
             units=str(payload.get("units", "mm")),
-            working_plane=payload.get("working_plane"),
+            working_plane=_coerce_dict(payload.get("working_plane")),
             reference_roi=_coerce_reference_roi(payload.get("reference_roi")),
             created=str(payload.get("created", _now_iso())),
             modified=str(payload.get("modified", _now_iso())),
@@ -501,7 +502,11 @@ class ProjectData:
         self._project_file = str(path.resolve())
 
     def validate_asset_paths(self, project_file: Path) -> None:
-        """Validate that all asset paths are within the project directory or absolute."""
+        """Validate that all asset paths are within the project directory or absolute.
+
+        Absolute paths are permitted (desktop workflows often reference external
+        storage), but are logged so the user can spot non-portable projects.
+        """
         self._project_file = str(project_file.resolve())
         project_dir = project_file.parent.resolve()
 
@@ -510,6 +515,11 @@ class ProjectData:
                 return
             candidate = Path(raw)
             if candidate.is_absolute():
+                logger.info(
+                    "Project references absolute asset path | field=%s | path=%s",
+                    field_name,
+                    raw,
+                )
                 return
             resolved_target = (project_dir / candidate).resolve()
             if not resolved_target.is_relative_to(project_dir):
@@ -524,7 +534,14 @@ class ProjectData:
     @classmethod
     def load(cls, path: Path) -> ProjectData:
         """Load a project from a JSON file and validate asset paths."""
+        size = path.stat().st_size
+        if size > MAX_PROJECT_FILE_BYTES:
+            raise ValueError(
+                f"Projektdatei ist zu groß ({size} Bytes, Limit {MAX_PROJECT_FILE_BYTES})."
+            )
         data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Projektdatei hat kein gültiges JSON-Objekt im Wurzelelement.")
         project = cls.from_dict(data)
         project.validate_asset_paths(path)
         return project
@@ -555,17 +572,9 @@ class ProjectData:
         return self.resolve_asset_path(self.reference_path)
 
     def ensure_image_entries(self) -> None:
-        """Legacy compatibility method. Ensures at least one image exists if needed."""
+        """Ensure at least one image entry exists."""
         if not self.images:
             self.add_image("")
-
-    def sync_from_active_image(self) -> None:
-        """Legacy compatibility method (No-Op). New model handles this automatically."""
-        pass
-
-    def sync_to_active_image(self) -> None:
-        """Legacy compatibility method (No-Op). New model handles this automatically."""
-        pass
 
 
 def _to_float(val: Any) -> float | None:
@@ -575,3 +584,44 @@ def _to_float(val: Any) -> float | None:
         return float(val)
     except (TypeError, ValueError):
         return None
+
+
+def _to_optional_int(val: Any) -> int | None:
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_transform_matrix(raw: Any) -> list[list[float]] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or len(raw) != 3:
+        return None
+    rows: list[list[float]] = []
+    for row in raw:
+        if not isinstance(row, list) or len(row) != 3:
+            return None
+        try:
+            rows.append([float(value) for value in row])
+        except (TypeError, ValueError):
+            return None
+    return rows
+
+
+def _coerce_dict(raw: Any) -> dict[str, Any] | None:
+    return raw if isinstance(raw, dict) else None
+
+
+def _coerce_export_settings(raw: Any) -> ExportSettings:
+    if not isinstance(raw, dict):
+        return ExportSettings()
+    allowed = {f.name for f in fields(ExportSettings)}
+    filtered = {key: value for key, value in raw.items() if key in allowed}
+    try:
+        return ExportSettings(**filtered)
+    except (TypeError, ValueError) as exc:
+        logger.warning("Falling back to default ExportSettings | error=%s", exc)
+        return ExportSettings()
