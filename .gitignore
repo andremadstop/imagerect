@@ -58,6 +58,7 @@ CODEX-TASK-*.md
 # User-local agent config
 .codex
 
-# Keep the tracked PyInstaller spec
+# Keep the tracked PyInstaller specs
 !imagerect.spec
+!imagerect_cli.spec
 INBOX.md
