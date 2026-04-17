@@ -68,7 +68,7 @@ disallow_untyped_defs = true
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["cv2.*", "ezdxf.*", "pye57.*", "open3d.*", "trimesh.*"]
+module = ["cv2.*", "ezdxf.*", "pye57.*", "open3d.*", "trimesh.*", "pyproj.*"]
 ignore_missing_imports = true
 disable_error_code = ["attr-defined"]
 

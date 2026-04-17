@@ -12,7 +12,10 @@ build/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
+coverage.xml
+mypy_report.txt
 
 # Test data — real project files, not for distribution
 tests/sample_data/*.dwg
